@@ -42,7 +42,12 @@ logger.add(
 )
 
 
-def chat_vlm(img_path_or_table_content: str = None):
+def chat_vlm(
+    prompt: str = None, 
+    img_path: str = None,
+    table_content: str = None,
+    text_content: str = None,
+    ):
     """
     使用request请求与vlm对话，获取图片或表格的描述，其中vlm以vllm以openai的风格启动的；
     若输入是图片，为图片命名，返回形式为“图 xxx”；
@@ -56,24 +61,17 @@ def chat_vlm(img_path_or_table_content: str = None):
     url = f"http://{HOST}:{VLM_PORT}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
 
-    is_image = False
-    if img_path_or_table_content and isinstance(img_path_or_table_content, str):
-        if os.path.exists(
-            img_path_or_table_content
-        ) and img_path_or_table_content.lower().endswith(
-            (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
-        ):
-            is_image = True
-
     messages = []
 
-    if is_image:
-        prommpt = """
-        请根据图片内容，为该图片命名。直接返回图片名字，名字必须以'图 '开头，例如'图 这里是图片的主题'。
-        """
+    if img_path:
+        if not prompt:
+            prompt = """
+            请根据图片内容，为该图片命名。直接返回图片名字，不要添加其他任何内容。
+            名字必须以'图 '开头，后面跟图片的主题，例如：图 DeepSeek MoE架构图
+            """
 
         try:
-            with open(img_path_or_table_content, "rb") as image_file:
+            with open(img_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode("utf-8")
         except Exception as e:
             logger.error(f"读取图片失败: {e}")
@@ -88,12 +86,17 @@ def chat_vlm(img_path_or_table_content: str = None):
             },
         ]
         messages.append({"role": "user", "content": content})
-    else:
-        prommpt = """
-        请根据下面的markdown表格内容，为该表格命名。直接返回表格名字，名字必须以'表 '开头，例如'表 这里是表格的主题'。
-        """
+    elif table_content:
+        if not prompt:
+            prompt = """
+            请根据下面的markdown表格内容，为该表格命名。直接返回表格名字，不要添加其他任何内容。
+            名字必须以'表 '开头，后面跟表格的主题，例如：表 各版本InfiniteBand特性对比
+            """
 
-        content = f"{prommpt}\n\n表格内容如下：\n{img_path_or_table_content}"
+        content = f"{prompt}\n\n表格内容如下：\n{table_content}"
+        messages.append({"role": "user", "content": content})
+    elif text_content:
+        content = f"{prompt}\n\n文本内容如下：\n{text_content}"
         messages.append({"role": "user", "content": content})
 
     payload = {"model": MODEL_NAME, "messages": messages, "temperature": 0.2}
