@@ -10,7 +10,7 @@ from loguru import logger
 
 # 确保能正确引入 src.utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.utils import chat_vlm
+from src.utils import chat_vlm,get_md_path
 
 
 def img_name_normalizer(chapter_path):
@@ -24,7 +24,11 @@ def img_name_normalizer(chapter_path):
     Args:
         chapter_path: 章节路径
     """
-    with open(chapter_path, "r", encoding="utf-8") as f:
+    md_path = get_md_path(chapter_path)
+    if not md_path:
+        logger.error(f"未找到章节 {chapter_path} 对应的md文件")
+        return
+    with open(md_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     for i in range(len(lines)):
@@ -65,6 +69,7 @@ def img_name_normalizer(chapter_path):
                     if os.path.exists(img_path):
                         logger.info(f"调用VLM识别图片并命名: {img_path}")
                         vlm_name = chat_vlm(img_path=img_path)
+                        logger.info(f"VLM返回的图片名称: {vlm_name}")
                         if vlm_name and vlm_name.startswith("图"):
                             new_alt = vlm_name.strip()
 
@@ -76,7 +81,7 @@ def img_name_normalizer(chapter_path):
                 offset += len(target) - (m.end() - m.start())
         lines[i] = new_line
 
-    with open(chapter_path, "w", encoding="utf-8") as f:
+    with open(md_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
 
@@ -88,7 +93,11 @@ def table_name_normalizer(chapter_path):
     Args:
         chapter_path: 章节路径
     """
-    with open(chapter_path, "r", encoding="utf-8") as f:
+    md_path = get_md_path(chapter_path)
+    if not md_path:
+        logger.error(f"未找到章节 {chapter_path} 对应的md文件")
+        return
+    with open(md_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     i = 0
@@ -117,6 +126,7 @@ def table_name_normalizer(chapter_path):
                     table_content = "".join(lines[table_start:table_end])
                     logger.info("调用VLM进行表格命名转换")
                     vlm_name = chat_vlm(table_content=table_content)
+                    logger.info(f"VLM返回的表格名称: {vlm_name}")
                     if vlm_name and vlm_name.startswith("表"):
                         lines.insert(table_start, f"{vlm_name.strip()}\n\n")
                         i = table_end + 1
@@ -125,7 +135,7 @@ def table_name_normalizer(chapter_path):
                 continue
         i += 1
 
-    with open(chapter_path, "w", encoding="utf-8") as f:
+    with open(md_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
 
