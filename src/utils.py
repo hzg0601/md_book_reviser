@@ -79,7 +79,7 @@ def chat_vlm(
 
         # 根据OpenAI vision格式构造content
         content = [
-            {"type": "text", "text": prommpt},
+            {"type": "text", "text": prompt},
             {
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
@@ -110,3 +110,36 @@ def chat_vlm(
     except Exception as e:
         logger.error(f"请求VLM服务失败: {e}")
         return ""
+
+def get_md_path(chapter_path: str):
+    md_paths = [path for path in os.listdir(chapter_path) if path.endswith('.md')]
+    if len(md_paths) > 1:
+        logger.error(f"{chapter_path}文件夹下有多个md文件，请检查")
+        return
+    if len(md_paths) == 0:
+        logger.error(f"{chapter_path}文件夹下没有md文件")
+        return
+        
+    md_path = md_paths[0]   
+    md_path_full = os.path.join(chapter_path, md_path)
+    return md_path_full
+
+def chapter_reader(md_path: str):
+    """
+    读取章节内容，返回章节内容字符串
+    Args:
+        md_path: 章节文件路径
+
+    Returns:
+        str: 章节内容字符串
+    """
+    if not md_path or not os.path.exists(md_path):
+        logger.error(f"章节文件不存在: {md_path}")
+        return ""
+    with open(md_path, 'r', encoding='utf-8') as f:
+        chapter_content = f.read()
+
+    if not chapter_content.strip():
+        logger.warning(f"章节内容为空，跳过修订: {md_path}")
+        return ""
+    return chapter_content

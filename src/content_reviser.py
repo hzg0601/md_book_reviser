@@ -13,7 +13,7 @@ import sys
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.utils import chat_vlm, logger
+from src.utils import chat_vlm, logger, chapter_reader
 
 prompt = """
 你是一位专业的文稿编辑，请对以下内容进行修订。修订要求如下：
@@ -73,27 +73,6 @@ def content_reviser(content: str, prompt: str = prompt):
 
     return suggestions, revised_content
 
-
-def chapter_reader(chapter_path: str):
-    """
-    读取章节内容，返回章节内容字符串
-    Args:
-        chapter_path: 章节文件路径
-
-    Returns:
-        str: 章节内容字符串
-    """
-    if not os.path.exists(chapter_path):
-        logger.error(f"章节文件不存在: {chapter_path}")
-        return ""
-
-    with open(chapter_path, 'r', encoding='utf-8') as f:
-        chapter_content = f.read()
-
-    if not chapter_content.strip():
-        logger.warning("章节内容为空，跳过修订")
-        return ""
-    return chapter_content
 
 def paragraph_merger(chapter_content: str, max_length: int = 16000):
     """

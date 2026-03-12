@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import re
 import shutil
-from src.utils import logger
+from src.utils import logger, get_md_path
+
 
 def img_unifier(chapter_path):
     """
@@ -23,18 +24,12 @@ def img_unifier(chapter_path):
     """
     if "image" not in os.listdir(chapter_path):
         return
+    md_path = get_md_path(chapter_path)
+    if not md_path:
+        logger.error(f"未找到章节中的md文件: {chapter_path}")
+        return
 
-    md_paths = [path for path in os.listdir(chapter_path) if path.endswith('.md')]
-    if len(md_paths) > 1:
-        logger.error(f"{chapter_path}文件夹下有多个md文件，请检查")
-        return
-    if len(md_paths) == 0:
-        logger.error(f"{chapter_path}文件夹下没有md文件")
-        return
-        
-    md_path = md_paths[0]   
-    md_path_full = os.path.join(chapter_path, md_path)
-    md_name = os.path.splitext(md_path)[0]
+    md_name = os.path.splitext(os.path.basename(md_path))[0]
     image_path = os.path.join(chapter_path, "image")
     
     # 2. 将image路径下的文件夹统一修改为与md文件一致
@@ -62,7 +57,7 @@ def img_unifier(chapter_path):
         return
 
     # 3. 遍历md文件中的图片引用
-    with open(md_path_full, 'r', encoding='utf-8') as f:
+    with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     referenced_images = set()
@@ -97,7 +92,7 @@ def img_unifier(chapter_path):
     new_content = re.sub(r'(<img[^>]+src\s*=\s*)(["\'])(.*?)\2([^>]*>)', html_replacer, new_content)
 
     if new_content != content:
-        with open(md_path_full, 'w', encoding='utf-8') as f:
+        with open(md_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
         logger.info(f"已更新文件 {md_path} 中的图片引用路径")
 
@@ -119,19 +114,3 @@ def img_unifier(chapter_path):
             os.remove(img_path)
             logger.info(f"已删除多余的图片: {img_path}")
 
-
-def batch_img_unifer(md_path):
-    """
-    处理md文件夹下的所有chapter_path
-    """
-    if not os.path.exists(md_path):
-        logger.error(f"路径 {md_path} 不存在")
-        return
-        
-    for item in os.listdir(md_path):
-        chapter_path = os.path.join(md_path, item)
-        if os.path.isdir(chapter_path):
-            logger.info(f"处理文件夹 {chapter_path}")
-            img_unifier(chapter_path)
-            logger.info(f"处理文件夹 {chapter_path} 完成")
-    logger.info(f"处理文件夹 {md_path} 完成")

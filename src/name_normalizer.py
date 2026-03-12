@@ -127,3 +127,5 @@ def table_name_normalizer(chapter_path):
 
     with open(chapter_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
+
+
