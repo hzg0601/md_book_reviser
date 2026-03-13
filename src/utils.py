@@ -4,9 +4,9 @@ from loguru import logger
 import base64
 import requests
 
-VLM_HOST = ""
-VLM_PORT = 8000
-MODEL_NAME = "Qwen3-VL-32B-Instruct"
+HOST = "172.16.55.10"
+PORT = 3466
+MODEL_NAME = "Qwen3-VL-32B-Instruct-AWQ"
 
 # 设置日志文件路径
 LOGS_DIR = "logs"
@@ -58,7 +58,7 @@ def chat_vlm(
         对话结果
     """
 
-    url = f"http://{HOST}:{VLM_PORT}/v1/chat/completions"
+    url = f"http://{HOST}:{PORT}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
 
     messages = []
@@ -66,7 +66,7 @@ def chat_vlm(
     if img_path:
         if not prompt:
             prompt = """
-            请根据图片内容，为该图片命名。直接返回图片名字，不要添加其他任何内容。
+            请根据图片内容，为该图片命名。直接返回图片名字，禁止添加其他任何内容！！！
             名字必须以'图 '开头，后面跟图片的主题，例如：图 DeepSeek MoE架构图
             """
 

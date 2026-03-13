@@ -10,7 +10,7 @@ from loguru import logger
 
 # 确保能正确引入 src.utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.utils import chat_vlm,get_md_path
+from src.utils import chat_vlm, get_md_path
 
 
 def img_name_normalizer(chapter_path):
@@ -31,9 +31,14 @@ def img_name_normalizer(chapter_path):
     with open(md_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    for i in range(len(lines)):
+    # Get the directory of the markdown file for relative path resolution
+    md_dir = os.path.dirname(md_path)
+
+    i = 0
+    while i < len(lines):
         matches = list(re.finditer(r"!\[(.*?)\]\((.*?)\)", lines[i]))
         if not matches:
+            i += 1
             continue
 
         new_line = lines[i]
@@ -42,36 +47,49 @@ def img_name_normalizer(chapter_path):
             alt = m.group(1)
             url = m.group(2)
 
-            # 无论 alt 是否已以"图"开头，都向下扫描并删除重复的"图 xx"图名
+            # 已经以"图 "或 图+数字 开头的图片名，仅向下查找并删除重复的图名行
+            if alt.strip().startswith("图 ") or re.search(r"图\s*\d+", alt.strip()):
+                for j in range(i + 1, min(i + 10, len(lines))):
+                    next_line = lines[j].strip()
+                    if next_line == "":
+                        continue
+                    if next_line.startswith("图 ") or re.search(r"^图\s*\d+", next_line):
+                        lines[j] = "\n"
+                    break
+                continue
+
+            # 向下查找以"图 "开头的图名
             found_title = None
+            found_title_index = None
             for j in range(i + 1, min(i + 10, len(lines))):
                 next_line = lines[j].strip()
                 if next_line == "":
                     continue
-                if next_line.startswith("图"):
+                if next_line.startswith("图 "):
                     found_title = next_line
-                    lines[j] = "\n"  # 删除图下方重复的"图 xx"图名
+                    found_title_index = j
                     break
                 else:
                     break
 
             new_alt = alt
-            if not alt.strip().startswith("图"):
-                # alt 未规范化时：优先用图下方找到的标题，否则调用VLM命名
-                if found_title:
-                    new_alt = found_title
-                else:
-                    img_path = url
-                    if not os.path.isabs(img_path):
-                        img_path = os.path.join(os.path.dirname(chapter_path), url)
-                        img_path = os.path.normpath(img_path)
+            if found_title:
+                # 使用找到的图名，并删除图下方的图名行
+                new_alt = found_title
+                lines[found_title_index] = "\n"
+            else:
+                # 未找到图名，调用VLM识别图片内容进行命名
+                img_path = url
+                if not os.path.isabs(img_path):
+                    img_path = os.path.join(md_dir, url)
+                    img_path = os.path.normpath(img_path)
 
-                    if os.path.exists(img_path):
-                        logger.info(f"调用VLM识别图片并命名: {img_path}")
-                        vlm_name = chat_vlm(img_path=img_path)
-                        logger.info(f"VLM返回的图片名称: {vlm_name}")
-                        if vlm_name and vlm_name.startswith("图"):
-                            new_alt = vlm_name.strip()
+                if os.path.exists(img_path):
+                    logger.info(f"调用VLM识别图片并命名: {img_path}")
+                    vlm_name = chat_vlm(img_path=img_path)
+                    logger.info(f"VLM返回的图片名称: {vlm_name}")
+                    if vlm_name and vlm_name.startswith("图 "):
+                        new_alt = vlm_name.strip()
 
             if new_alt != alt:
                 target = f"![{new_alt}]({url})"
@@ -79,7 +97,9 @@ def img_name_normalizer(chapter_path):
                 end = m.end() + offset
                 new_line = new_line[:start] + target + new_line[end:]
                 offset += len(target) - (m.end() - m.start())
+
         lines[i] = new_line
+        i += 1
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
@@ -100,42 +120,85 @@ def table_name_normalizer(chapter_path):
     with open(md_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
+    def is_valid_table_separator(separator_line):
+        """Check if a line is a valid markdown table separator"""
+        line = separator_line.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            return False
+
+        # Remove leading and trailing |
+        cells = line[1:-1].split("|")
+        if not cells:
+            return False
+
+        for cell in cells:
+            cell = cell.strip()
+            if not cell:  # Empty cell is allowed
+                continue
+            # Valid separator cells contain only -, with optional : at start/end
+            if not re.match(r"^:?-+:?$", cell):
+                return False
+        return True
+
+    def count_table_columns(header_line):
+        """Count the number of columns in a table header"""
+        line = header_line.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            return 0
+        cells = line[1:-1].split("|")
+        return len([cell for cell in cells if cell.strip() != ""])
+
     i = 0
     while i < len(lines):
-        if "|" in lines[i]:
-            if i + 1 < len(lines) and "|" in lines[i + 1] and "-" in lines[i + 1]:
-                table_start = i
-                table_end = i
-                while table_end < len(lines):
-                    if lines[table_end].strip() == "" or "|" not in lines[table_end]:
-                        break
-                    table_end += 1
+        # Check if current line could be a table header
+        if (
+            "|" in lines[i]
+            and lines[i].strip().startswith("|")
+            and lines[i].strip().endswith("|")
+        ):
+            # Check if next line is a valid table separator
+            if i + 1 < len(lines) and is_valid_table_separator(lines[i + 1]):
+                # Verify column count matches between header and separator
+                header_cols = count_table_columns(lines[i])
+                separator_cols = count_table_columns(lines[i + 1])
 
-                has_title = False
-                for j in range(table_start - 1, -1, -1):
-                    prev_line = lines[j].strip()
-                    if prev_line == "":
-                        continue
-                    if prev_line.startswith("表"):
-                        has_title = True
-                        break
-                    else:
-                        break
+                if header_cols > 0 and header_cols == separator_cols:
+                    table_start = i
+                    table_end = i + 2  # Start after header and separator
 
-                if not has_title:
-                    table_content = "".join(lines[table_start:table_end])
-                    logger.info("调用VLM进行表格命名转换")
-                    vlm_name = chat_vlm(table_content=table_content)
-                    logger.info(f"VLM返回的表格名称: {vlm_name}")
-                    if vlm_name and vlm_name.startswith("表"):
-                        lines.insert(table_start, f"{vlm_name.strip()}\n\n")
-                        i = table_end + 1
-                        continue
-                i = table_end
-                continue
+                    # Find the end of the table
+                    while table_end < len(lines):
+                        line = lines[table_end].strip()
+                        if line == "" or not (
+                            line.startswith("|") and line.endswith("|")
+                        ):
+                            break
+                        table_end += 1
+
+                    has_title = False
+                    for j in range(table_start - 1, -1, -1):
+                        prev_line = lines[j].strip()
+                        if prev_line == "":
+                            continue
+                        if prev_line.startswith("表"):
+                            has_title = True
+                            break
+                        else:
+                            break
+
+                    if not has_title:
+                        table_content = "".join(lines[table_start:table_end])
+                        logger.info(table_content)
+                        logger.info("调用VLM进行表格命名转换")
+                        vlm_name = chat_vlm(table_content=table_content)
+                        logger.info(f"VLM返回的表格名称: {vlm_name}")
+                        if vlm_name and vlm_name.startswith("表"):
+                            lines.insert(table_start, f"{vlm_name.strip()}\n\n")
+                            i = table_end + 1
+                            continue
+                    i = table_end
+                    continue
         i += 1
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
-
-
