@@ -8,9 +8,9 @@ from src.structure_unifier import img_unifier
 from src.formatter import remove_blank_in_equation, black2normal
 from src.utils import logger
 from src.name_normalizer import img_name_normalizer, table_name_normalizer
+from src.bibliography import batch_bibliography_recognizer
 
-
-md_book_path = r"C:\Users\Lenovo\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+md_book_path = r"C:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models"
 
 
 def batch_chapter_process(md_book_path):
@@ -29,6 +29,7 @@ def batch_chapter_process(md_book_path):
             # img_name_normalizer(chapter_path)
             # table_name_normalizer(chapter_path)
             # remove_blank_in_equation(chapter_path)
+            batch_bibliography_recognizer(chapter_path)
             # black2normal(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
     logger.info(f"处理文件夹 {md_book_path} 完成")

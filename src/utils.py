@@ -4,10 +4,10 @@ from loguru import logger
 import base64
 import requests
 
-API_ENDPOINT = os.getenv("API_ENDPOINT", "https://api.nvidia.com")
+API_ENDPOINT = os.getenv("API_ENDPOINT", "https://integrate.api.nvidia.com")
 URL = f"{API_ENDPOINT}/v1/chat/completions"
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen/qwen3.5-122b-a10b")
-API_KEY = os.getenv("API_KEY","EMPTY")
+API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     logger.error("未找到NVIDIA_API_KEY环境变量，请设置后重试")
     sys.exit(1)
@@ -63,7 +63,7 @@ def chat_vlm(
     """
 
     
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json","Authorization": f"Bearer {API_KEY}"}
 
     messages = []
 

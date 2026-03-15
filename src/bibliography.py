@@ -2,8 +2,11 @@
 用于调用VLM服务识别图中所有出现的文献，找到其对应的文献条目，以MLA格式或来源进行规范化.
 
 """
+
 import os
 import sys
+import time
+import random
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,32 +20,88 @@ from urllib.parse import quote_plus
 import requests
 
 
-
-
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 CROSSREF_URL = "https://api.crossref.org/works"
 WIKIPEDIA_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
 REQUEST_TIMEOUT = 12
+MAX_RETRIES = 4
+BASE_BACKOFF_SECONDS = 1.5
+MAX_BACKOFF_SECONDS = 20.0
+DEFAULT_HEADERS = {
+    "User-Agent": "md-book-reviser/1.0",
+}
 
 
-def _safe_get_json(url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """统一HTTP请求入口，失败时返回None。"""
-    try:
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:
-        logger.warning(f"请求失败: {url}, params={params}, error={exc}")
-        return None
+def _safe_get_json(
+    url: str,
+    params: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    max_retries: int = MAX_RETRIES,
+) -> Optional[Dict[str, Any]]:
+    """统一HTTP请求入口，支持429/5xx重试与指数退避。"""
+    merged_headers = dict(DEFAULT_HEADERS)
+    if headers:
+        merged_headers.update(headers)
 
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=merged_headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            # 429/5xx 视为可重试错误
+            if (
+                response.status_code in (429, 500, 502, 503, 504)
+                and attempt < max_retries
+            ):
+                retry_after_raw = response.headers.get("Retry-After")
+                try:
+                    retry_after = float(retry_after_raw) if retry_after_raw else 0.0
+                except ValueError:
+                    retry_after = 0.0
+
+                exponential = min(
+                    BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS
+                )
+                jitter = random.uniform(0.0, 0.5)
+                sleep_seconds = max(retry_after, exponential + jitter)
+
+                logger.warning(
+                    f"请求限流/暂时失败(status={response.status_code})，将在{sleep_seconds:.2f}s后重试: "
+                    f"{url}, params={params}, attempt={attempt + 1}/{max_retries + 1}"
+                )
+                time.sleep(sleep_seconds)
+                continue
+
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            if attempt >= max_retries:
+                logger.warning(f"请求失败: {url}, params={params}, error={exc}")
+                return None
+
+            sleep_seconds = min(
+                BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS
+            ) + random.uniform(0.0, 0.5)
+            logger.warning(
+                f"请求异常，将在{sleep_seconds:.2f}s后重试: {url}, params={params}, "
+                f"attempt={attempt + 1}/{max_retries + 1}, error={exc}"
+            )
+            time.sleep(sleep_seconds)
+
+    return None
 
 
 EXTRACT_ENTITIES_PROMPT = """你是一位专业的学术文献分析助手。请仔细阅读下面的文本，从中识别出所有涉及的：
-1. 算法（algorithm）：如 Transformer、Adam、PageRank、K-Means 等
-2. 模型（model）：如 BERT、GPT-4、ResNet、YOLO、DeepSeek-R1 等
+1. 算法（algorithm）：如 PagedAttention 等
+2. 模型（model）：如 DeepSeek-R1 等
 3. 文献（literature）：如论文标题、书名、被引用的著作等
 
 要求：
+- 识别的算法和模型应该与LLM具有强相关性，避免出现过于基础（如BERT）、宽泛（如Transformer）、或与LLM无关的算法/模型名称
 - 仅提取文本中明确提及的实体，不要推测或编造
 - 每个实体给出它在原文中出现的片段作为 evidence
 - 对缩写请同时给出全称（如已知），name 字段使用最常用的名称
@@ -72,7 +131,7 @@ def _parse_vlm_entities(vlm_response: str) -> List[Dict[str, str]]:
     bracket_start = raw.find("[")
     bracket_end = raw.rfind("]")
     if bracket_start != -1 and bracket_end != -1:
-        raw = raw[bracket_start:bracket_end + 1]
+        raw = raw[bracket_start : bracket_end + 1]
 
     try:
         entities = json.loads(raw)
@@ -124,7 +183,6 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
     return entities
 
 
-
 def _mla_author(authors: List[str]) -> str:
     """将作者列表格式化为MLA风格。"""
     if not authors:
@@ -155,7 +213,7 @@ def _build_mla_citation(metadata: Dict[str, Any]) -> str:
     doi = metadata.get("doi", "")
     url = metadata.get("url", "")
 
-    segments = [f"{authors} \"{title}.\""]
+    segments = [f'{authors} "{title}."']
     if venue:
         segments.append(venue)
     segments.append(str(year))
@@ -216,7 +274,12 @@ def search_semantic_scholar(query: str, max_items: int = 5) -> List[Dict[str, An
         "limit": max_items,
         "fields": "title,authors,year,venue,url,externalIds,citationCount",
     }
-    data = _safe_get_json(SEMANTIC_SCHOLAR_URL, params)
+    headers = {}
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    data = _safe_get_json(SEMANTIC_SCHOLAR_URL, params, headers=headers)
     if not data:
         return []
 
@@ -253,6 +316,7 @@ def _match_score(query: str, item: Dict[str, Any]) -> float:
     citation_bonus = min(item.get("citationCount", 0) / 2000.0, 0.2)
     return min(overlap + citation_bonus, 1.0)
 
+
 def _match_by_vlm(query: str, candidates: List[Dict[str, Any]]) -> str:
     """调用VLM来匹配最相关的1篇论文"""
     if not candidates:
@@ -275,6 +339,7 @@ def _match_by_vlm(query: str, candidates: List[Dict[str, Any]]) -> str:
     except json.JSONDecodeError:
         logger.warning(f"VLM匹配返回非法JSON，响应内容: {vlm_response[:200]}")
     return None
+
 
 def _find_fallback_link(query: str) -> str:
     """无论文结果时，回退到百科检索链接。"""
@@ -299,7 +364,9 @@ def _find_fallback_link(query: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote_plus(best_title.replace(' ', '_'))}"
 
 
-def resolve_entity_reference(entity: Dict[str, str],match_method:str=None) -> Dict[str, Any]:
+def resolve_entity_reference(
+    entity: Dict[str, str], match_method: str = None
+) -> Dict[str, Any]:
     """为单个实体检索论文并生成引用，失败时回退为链接。"""
     query = entity["name"]
     candidates = search_crossref(query) + search_semantic_scholar(query)
@@ -308,7 +375,9 @@ def resolve_entity_reference(entity: Dict[str, str],match_method:str=None) -> Di
         if match_method == "vlm":
             best = _match_by_vlm(query, candidates)
         else:
-            ranked = sorted(candidates, key=lambda x: _match_score(query, x), reverse=True)
+            ranked = sorted(
+                candidates, key=lambda x: _match_score(query, x), reverse=True
+            )
             best = ranked[0]
         # confidence = _match_score(query, best)
         citation = _build_mla_citation(best)
@@ -330,7 +399,7 @@ def resolve_entity_reference(entity: Dict[str, str],match_method:str=None) -> Di
         # }
 
     link = _find_fallback_link(query)
-    fallback_citation = f"\"{query}.\" Web, {link}."
+    fallback_citation = f'"{query}." Web, {link}.'
     return fallback_citation
 
     # return {
@@ -376,15 +445,18 @@ def paragraph_bibliography_recognizer(paragraph: str) -> Dict[str, Any]:
 
     return results
 
+
 def origin_bibliography_extractor(chapter_content: str) -> Dict[str, Any]:
     """读取原文中的参考文献，参考文献在原文中的参考文献小节，格式为“## 参考文献”，
-      对于其中的非MLA来源，调用Chat_VLM组织为MLA格式。
+    对于其中的非MLA来源，调用Chat_VLM组织为MLA格式。
     """
     if not chapter_content:
         return {}
 
     # 简单提取“## 参考文献”小节的内容
-    match = re.search(r"##\s*参考文献\s*(.*?)\s*(##|$)", chapter_content, re.DOTALL | re.IGNORECASE)
+    match = re.search(
+        r"##\s*参考文献\s*(.*?)\s*(##|$)", chapter_content, re.DOTALL | re.IGNORECASE
+    )
     if not match:
         return {}
 
@@ -396,12 +468,13 @@ def origin_bibliography_extractor(chapter_content: str) -> Dict[str, Any]:
     参考文献之间用换行符分隔：\n
     {bibliography_section}
     """
-    vlm_response = chat_vlm(prompt=prompt,text_content=bibliography_section)
+    vlm_response = chat_vlm(prompt=prompt, text_content=bibliography_section)
     # 假设每条参考文献以换行或数字开头
     entries = re.split(r"\n\d+\.\s+|\n-+\s+|\n\s*\*\s+", vlm_response.strip())
     entries = [e.strip() for e in entries if e.strip()]
 
     return entries
+
 
 def merge_bibliography(origin: List, recognized: List) -> List[str]:
     """
@@ -428,19 +501,18 @@ def merge_bibliography(origin: List, recognized: List) -> List[str]:
     VLM识别的参考文献：
     {recognized}
     """
-    vlm_response = chat_vlm(prompt=prompt,text_content=prompt)
+    vlm_response = chat_vlm(prompt=prompt, text_content=prompt)
     entries = re.split(r"\n\d+\.\s+|\n-+\s+|\n\s*\*\s+", vlm_response.strip())
     entries = [e.strip() for e in entries if e.strip()]
     return entries
 
 
 def batch_bibliography_recognizer(chapter_path: str):
-    """识别图片中的所有文献，返回MLA格式的文献条目
-    """
+    """识别图片中的所有文献，返回MLA格式的文献条目"""
     md_path = get_md_path(chapter_path)
     chapter_content = chapter_reader(md_path)
     if not chapter_content:
-        return {}
+        return
     origin_citations = origin_bibliography_extractor(chapter_content)
     paragraphs = paragraph_merger(chapter_content)
     merged: Dict[str, Any] = {}
@@ -452,28 +524,23 @@ def batch_bibliography_recognizer(chapter_path: str):
     merged_citations = merge_bibliography(origin_citations, paragraph_citations)
     # 将合并后的参考文献写回到原文中，替换原有的参考文献小节
     updated_chapter_content = re.sub(
-        r"(##\s*参考文献\s*)(.*?)(\s*##|$)", 
-        f"## 参考文献\n\n{chr(10).join(merged_citations)}\n\n\\3", 
-        chapter_content, 
-        flags=re.DOTALL | re.IGNORECASE
-        )
+        r"(##\s*参考文献\s*)(.*?)(\s*##|$)",
+        f"## 参考文献\n\n{chr(10).join(merged_citations)}\n\n\\3",
+        chapter_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(updated_chapter_content)
     # 同时将识别的文献条目保存到一个单独的JSON文件中，便于后续分析
     json_path = md_path.replace(".md", "_bibliography.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=4)
-    
 
 
 if __name__ == "__main__":
     sample_text = (
         "Transformer 和 BERT 在很多任务上优于传统 SVM。"
-        "另外，\"Attention Is All You Need\" 是关键文献。"
+        '另外，"Attention Is All You Need" 是关键文献。'
     )
     sample_result = paragraph_bibliography_recognizer(sample_text)
     logger.info(f"识别完成，共{len(sample_result)}条实体")
-
-
-
-
