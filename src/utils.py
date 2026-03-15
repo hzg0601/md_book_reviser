@@ -4,9 +4,13 @@ from loguru import logger
 import base64
 import requests
 
-HOST = "172.16.55.10"
-PORT = 3466
-MODEL_NAME = "Qwen3-VL-32B-Instruct-AWQ"
+API_ENDPOINT = os.getenv("API_ENDPOINT", "https://api.nvidia.com")
+URL = f"{API_ENDPOINT}/v1/chat/completions"
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen/qwen3.5-122b-a10b")
+API_KEY = os.getenv("API_KEY","EMPTY")
+if not API_KEY:
+    logger.error("未找到NVIDIA_API_KEY环境变量，请设置后重试")
+    sys.exit(1)
 
 # 设置日志文件路径
 LOGS_DIR = "logs"
@@ -58,7 +62,7 @@ def chat_vlm(
         对话结果
     """
 
-    url = f"http://{HOST}:{PORT}/v1/chat/completions"
+    
     headers = {"Content-Type": "application/json"}
 
     messages = []
@@ -102,7 +106,7 @@ def chat_vlm(
     payload = {"model": MODEL_NAME, "messages": messages, "temperature": 0.2}
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        response = requests.post(URL, headers=headers, json=payload, timeout=360)
         response.raise_for_status()
         result = response.json()
         ans = result["choices"][0]["message"]["content"].strip()
