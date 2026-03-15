@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import re
 import json
-from src.utils import logger, chat_vlm
+from src.utils import get_md_path, logger, chat_vlm
 from src.content_reviser import paragraph_merger, chapter_reader
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
@@ -253,6 +253,28 @@ def _match_score(query: str, item: Dict[str, Any]) -> float:
     citation_bonus = min(item.get("citationCount", 0) / 2000.0, 0.2)
     return min(overlap + citation_bonus, 1.0)
 
+def _match_by_vlm(query: str, candidates: List[Dict[str, Any]]) -> str:
+    """调用VLM来匹配最相关的1篇论文"""
+    if not candidates:
+        return None
+    prompt = f"""你是一位专业的学术文献分析助手。请根据以下论文候选列表，选择最相关的1篇论文来支持以下查询：
+查询：{query}
+论文候选：
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+请返回最相关的1篇论文的完整条目，格式为JSON数组：
+```json
+  {"title": "...", "authors": [...], "venue": "...", "year": "...", "doi": "...", "url": "...", "source_db": "..."}
+```
+如果没有论文相关，请返回空数组 []。
+"""
+    vlm_response = chat_vlm(prompt=prompt, text_content=prompt)
+    try:
+        selected = json.loads(vlm_response.strip())
+        if isinstance(selected, dict):
+            return selected
+    except json.JSONDecodeError:
+        logger.warning(f"VLM匹配返回非法JSON，响应内容: {vlm_response[:200]}")
+    return None
 
 def _find_fallback_link(query: str) -> str:
     """无论文结果时，回退到百科检索链接。"""
@@ -277,50 +299,56 @@ def _find_fallback_link(query: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote_plus(best_title.replace(' ', '_'))}"
 
 
-def resolve_entity_reference(entity: Dict[str, str]) -> Dict[str, Any]:
+def resolve_entity_reference(entity: Dict[str, str],match_method:str=None) -> Dict[str, Any]:
     """为单个实体检索论文并生成引用，失败时回退为链接。"""
     query = entity["name"]
     candidates = search_crossref(query) + search_semantic_scholar(query)
 
     if candidates:
-        ranked = sorted(candidates, key=lambda x: _match_score(query, x), reverse=True)
-        best = ranked[0]
-        confidence = _match_score(query, best)
+        if match_method == "vlm":
+            best = _match_by_vlm(query, candidates)
+        else:
+            ranked = sorted(candidates, key=lambda x: _match_score(query, x), reverse=True)
+            best = ranked[0]
+        # confidence = _match_score(query, best)
         citation = _build_mla_citation(best)
-        return {
-            "type": entity["type"],
-            "evidence": entity["evidence"],
-            "normalized_name": query,
-            "match": {
-                "status": "paper_found",
-                "confidence": round(confidence, 3),
-                "source_db": best.get("source_db"),
-                "paper": best,
-            },
-            "citation": {
-                "style": "MLA9",
-                "text": citation,
-            },
-        }
+        return citation
+        # return {
+        #     "type": entity["type"],
+        #     "evidence": entity["evidence"],
+        #     "normalized_name": query,
+        #     "match": {
+        #         "status": "paper_found",
+        #         "confidence": round(confidence, 3),
+        #         "source_db": best.get("source_db"),
+        #         "paper": best,
+        #     },
+        #     "citation": {
+        #         "style": "MLA9",
+        #         "text": citation,
+        #     },
+        # }
 
     link = _find_fallback_link(query)
     fallback_citation = f"\"{query}.\" Web, {link}."
-    return {
-        "type": entity["type"],
-        "evidence": entity["evidence"],
-        "normalized_name": query,
-        "match": {
-            "status": "no_paper_fallback_link",
-            "confidence": 0.0,
-            "source_db": None,
-            "best_link": link,
-            "link_source": "wikipedia_or_google",
-        },
-        "citation": {
-            "style": "MLA9",
-            "text": fallback_citation,
-        },
-    }
+    return fallback_citation
+
+    # return {
+    #     "type": entity["type"],
+    #     "evidence": entity["evidence"],
+    #     "normalized_name": query,
+    #     "match": {
+    #         "status": "no_paper_fallback_link",
+    #         "confidence": 0.0,
+    #         "source_db": None,
+    #         "best_link": link,
+    #         "link_source": "wikipedia_or_google",
+    #     },
+    #     "citation": {
+    #         "style": "MLA9",
+    #         "text": fallback_citation,
+    #     },
+    # }
 
 
 def paragraph_bibliography_recognizer(paragraph: str) -> Dict[str, Any]:
@@ -348,22 +376,94 @@ def paragraph_bibliography_recognizer(paragraph: str) -> Dict[str, Any]:
 
     return results
 
-
-
-def batch_bibliography_recognizer(chapter_path: str) -> Dict[str, Any]:
-    """识别图片中的所有文献，返回MLA格式的文献条目
+def origin_bibliography_extractor(chapter_content: str) -> Dict[str, Any]:
+    """读取原文中的参考文献，参考文献在原文中的参考文献小节，格式为“## 参考文献”，
+      对于其中的非MLA来源，调用Chat_VLM组织为MLA格式。
     """
-    chapter_content = chapter_reader(chapter_path)
     if not chapter_content:
         return {}
 
+    # 简单提取“## 参考文献”小节的内容
+    match = re.search(r"##\s*参考文献\s*(.*?)\s*(##|$)", chapter_content, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return {}
+
+    bibliography_section = match.group(1).strip()
+
+    # 将非MLA格式的条目组织为MLA格式
+    prompt = f"""你是一位专业的学术文献分析助手。
+    请将以下参考文献的论文和书籍来源规范化为MLA格式，网址来源保持不变，
+    参考文献之间用换行符分隔：\n
+    {bibliography_section}
+    """
+    vlm_response = chat_vlm(prompt=prompt,text_content=bibliography_section)
+    # 假设每条参考文献以换行或数字开头
+    entries = re.split(r"\n\d+\.\s+|\n-+\s+|\n\s*\*\s+", vlm_response.strip())
+    entries = [e.strip() for e in entries if e.strip()]
+
+    return entries
+
+def merge_bibliography(origin: List, recognized: List) -> List[str]:
+    """
+    1. 调用chat_vlm合并原文中的参考文献和VLM识别的文献，去重，排序。
+    2. 排序原则为：（1）网址来源排在最后；（2）其他按照首字母顺序排序；
+    Args:
+        origin: 原文中的参考文献列表
+        recognized: VLM识别的参考文献列表
+
+    Returns:
+        List[str]: 合并后的参考文献列表
+    """
+    if not origin and not recognized:
+        return []
+    if not origin:
+        return recognized
+    if not recognized:
+        return origin
+
+    prompt = f"""你是一位专业的学术文献分析助手。
+    请将以下两组参考文献合并为一个去重且排序的列表，网址来源排在最后，其他按照首字母顺序排序：
+    原文中的参考文献：
+    {origin}
+    VLM识别的参考文献：
+    {recognized}
+    """
+    vlm_response = chat_vlm(prompt=prompt,text_content=prompt)
+    entries = re.split(r"\n\d+\.\s+|\n-+\s+|\n\s*\*\s+", vlm_response.strip())
+    entries = [e.strip() for e in entries if e.strip()]
+    return entries
+
+
+def batch_bibliography_recognizer(chapter_path: str):
+    """识别图片中的所有文献，返回MLA格式的文献条目
+    """
+    md_path = get_md_path(chapter_path)
+    chapter_content = chapter_reader(md_path)
+    if not chapter_content:
+        return {}
+    origin_citations = origin_bibliography_extractor(chapter_content)
     paragraphs = paragraph_merger(chapter_content)
     merged: Dict[str, Any] = {}
     for paragraph in paragraphs:
         paragraph_result = paragraph_bibliography_recognizer(paragraph)
         merged.update(paragraph_result)
-
-    return merged
+    paragraph_citations = list(merged.values())
+    # 合并原文中的参考文献和VLM识别的文献，去重
+    merged_citations = merge_bibliography(origin_citations, paragraph_citations)
+    # 将合并后的参考文献写回到原文中，替换原有的参考文献小节
+    updated_chapter_content = re.sub(
+        r"(##\s*参考文献\s*)(.*?)(\s*##|$)", 
+        f"## 参考文献\n\n{chr(10).join(merged_citations)}\n\n\\3", 
+        chapter_content, 
+        flags=re.DOTALL | re.IGNORECASE
+        )
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(updated_chapter_content)
+    # 同时将识别的文献条目保存到一个单独的JSON文件中，便于后续分析
+    json_path = md_path.replace(".md", "_bibliography.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=4)
+    
 
 
 if __name__ == "__main__":

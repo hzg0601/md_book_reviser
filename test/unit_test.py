@@ -26,10 +26,10 @@ def batch_chapter_process(md_book_path):
         if os.path.isdir(chapter_path) and ".git" !=item:
             logger.info(f"处理文件夹 {chapter_path}")
             # img_unifier(chapter_path)
+            # img_name_normalizer(chapter_path)
+            # table_name_normalizer(chapter_path)
             # remove_blank_in_equation(chapter_path)
             # black2normal(chapter_path)
-            img_name_normalizer(chapter_path)
-            table_name_normalizer(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
     logger.info(f"处理文件夹 {md_book_path} 完成")
 

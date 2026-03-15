@@ -74,7 +74,7 @@ def content_reviser(content: str, prompt: str = prompt):
     return suggestions, revised_content
 
 
-def paragraph_merger(chapter_content: str, max_length: int = 16000):
+def paragraph_merger(chapter_content: str, max_length: int = 8000):
     """
     将章节内容按照最大字符数限制进行分段，尊重段落边界
     Args:
@@ -120,15 +120,23 @@ def batch_content_reviser(chapter_path: str):
     merged_paragraphs = paragraph_merger(chapter_content)
 
     ## 调用VLM服务进行内容修订
-    all_suggestions = []
-    revised_paragraphs = []
-    for paragraph in merged_paragraphs:
+    section = {}
+    revised_content = ""
+    for idx, paragraph in enumerate(merged_paragraphs):
         suggestions, revised_paragraph = content_reviser(paragraph)
-        all_suggestions.append(suggestions)
-        revised_paragraphs.append(revised_paragraph)
-    ## 合并修订建议和修订后的内容
-    combined_suggestions = '\n\n'.join(all_suggestions)
-    revised_chapter_content = '\n\n'.join(revised_paragraphs)
-
-    return combined_suggestions, revised_chapter_content
+        section[f"paragraph_{idx+1}"] = {
+            "suggestions": suggestions,
+            "revised_content": revised_paragraph
+        }
+        revised_content += revised_paragraph + "\n\n"
+    # 将建议和修订后的内容写入chapter_path下的revised.json文件
+    revised_path = os.path.join(os.path.dirname(chapter_path), "revised.json")
+    with open(revised_path, "w", encoding="utf-8") as f:    
+        json.dump(section, f, ensure_ascii=False, indent=4)
+    # 将修订后的内容写入chapter_path下的revised.markdown文件
+    revised_md_path = os.path.join(os.path.dirname(chapter_path), "revised.markdown")
+    with open(revised_md_path, "w", encoding="utf-8") as f:
+        f.write(revised_content)
+    logger.info(f"修订结果已保存到 {revised_path}")
+    logger.info(f"修订后的内容已保存到 {revised_md_path}")
 
