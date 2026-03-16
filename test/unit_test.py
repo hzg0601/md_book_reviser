@@ -8,7 +8,7 @@ from src.structure_unifier import img_unifier
 from src.formatter import remove_blank_in_equation, black2normal
 from src.utils import logger
 from src.name_normalizer import img_name_normalizer, table_name_normalizer
-from src.bibliography import batch_bibliography_recognizer
+from bibliography_citation_api import batch_bibliography_recognizer
 
 md_book_path = r"C:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models"
 

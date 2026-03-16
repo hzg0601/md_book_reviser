@@ -183,6 +183,55 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
     return entities
 
 
+def _normalize_entity_name(name: str) -> str:
+    """将实体名称归一化用于去重。"""
+    return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def deduplicate_entities(entities: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """按实体名称全局去重，并合并证据片段。"""
+    merged_by_name: Dict[str, Dict[str, str]] = {}
+    evidence_seen: Dict[str, set] = {}
+
+    for entity in entities:
+        name = str(entity.get("name", "")).strip()
+        if not name:
+            continue
+
+        key = _normalize_entity_name(name)
+        etype = str(entity.get("type", "literature")).strip().lower() or "literature"
+        evidence = str(entity.get("evidence", name)).strip() or name
+
+        if key not in merged_by_name:
+            merged_by_name[key] = {"name": name, "type": etype, "evidence": evidence}
+            evidence_seen[key] = {evidence}
+            continue
+
+        if evidence and evidence not in evidence_seen[key]:
+            merged_by_name[key]["evidence"] += f" | {evidence}"
+            evidence_seen[key].add(evidence)
+
+    return list(merged_by_name.values())
+
+
+def collect_entities_from_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
+    """先从所有段落中提取实体，再统一去重。"""
+    all_entities: List[Dict[str, str]] = []
+    for idx, paragraph in enumerate(paragraphs, start=1):
+        if not paragraph or not paragraph.strip():
+            continue
+        entities = extract_entities(paragraph)
+        if entities:
+            logger.info(f"第{idx}段提取实体 {len(entities)} 个")
+            all_entities.extend(entities)
+
+    deduped = deduplicate_entities(all_entities)
+    logger.info(
+        f"全量实体提取完成: 原始 {len(all_entities)} 个, 去重后 {len(deduped)} 个"
+    )
+    return deduped
+
+
 def _mla_author(authors: List[str]) -> str:
     """将作者列表格式化为MLA风格。"""
     if not authors:
@@ -379,45 +428,12 @@ def resolve_entity_reference(
                 candidates, key=lambda x: _match_score(query, x), reverse=True
             )
             best = ranked[0]
-        # confidence = _match_score(query, best)
         citation = _build_mla_citation(best)
         return citation
-        # return {
-        #     "type": entity["type"],
-        #     "evidence": entity["evidence"],
-        #     "normalized_name": query,
-        #     "match": {
-        #         "status": "paper_found",
-        #         "confidence": round(confidence, 3),
-        #         "source_db": best.get("source_db"),
-        #         "paper": best,
-        #     },
-        #     "citation": {
-        #         "style": "MLA9",
-        #         "text": citation,
-        #     },
-        # }
 
     link = _find_fallback_link(query)
     fallback_citation = f'"{query}." Web, {link}.'
     return fallback_citation
-
-    # return {
-    #     "type": entity["type"],
-    #     "evidence": entity["evidence"],
-    #     "normalized_name": query,
-    #     "match": {
-    #         "status": "no_paper_fallback_link",
-    #         "confidence": 0.0,
-    #         "source_db": None,
-    #         "best_link": link,
-    #         "link_source": "wikipedia_or_google",
-    #     },
-    #     "citation": {
-    #         "style": "MLA9",
-    #         "text": fallback_citation,
-    #     },
-    # }
 
 
 def paragraph_bibliography_recognizer(paragraph: str) -> Dict[str, Any]:
@@ -515,10 +531,23 @@ def batch_bibliography_recognizer(chapter_path: str):
         return
     origin_citations = origin_bibliography_extractor(chapter_content)
     paragraphs = paragraph_merger(chapter_content)
+    if os.path.exists(os.path.join(chapter_path, "related_entities.json")):
+        logger.info(f"已存在 related_entities.json，跳过VLM识别，直接加载")
+        with open(os.path.join(chapter_path, "related_entities.json"), "r", encoding="utf-8") as f:
+            unique_entities = json.load(f)
+    else:
+        # 先检索全部实体，再去重；候选检索仅在去重实体上执行
+        unique_entities = collect_entities_from_paragraphs(paragraphs)
+        # 以 related_entities.json文件名保存到本地文件
+        json_path = os.path.join(chapter_path, "related_entities.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(unique_entities, f, ensure_ascii=False, indent=4)
+
     merged: Dict[str, Any] = {}
-    for paragraph in paragraphs:
-        paragraph_result = paragraph_bibliography_recognizer(paragraph)
-        merged.update(paragraph_result)
+    for entity in unique_entities:
+        resolved = resolve_entity_reference(entity)
+        merged[entity["name"]] = resolved
+
     paragraph_citations = list(merged.values())
     # 合并原文中的参考文献和VLM识别的文献，去重
     merged_citations = merge_bibliography(origin_citations, paragraph_citations)
