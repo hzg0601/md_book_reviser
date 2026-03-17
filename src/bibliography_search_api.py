@@ -28,7 +28,7 @@ import requests
 
 from src.utils import get_md_path, logger, chat_vlm, chapter_reader
 from src.content_reviser import paragraph_merger
-from src.utils import BOCHA_API_KEY, BOCHA_SEARCH_URL
+from src.utils import BOCHA_API_KEY, BOCHA_SEARCH_URL, MAX_CHARS_PER_CHUNK
 
 
 # ─────────────────────── 博查搜索 ───────────────────────
@@ -106,7 +106,7 @@ EXTRACT_SYSTEM_PROMPT = """\
 def extract_citations(article_text: str) -> list[dict]:
     """使用LLM从文章中提取引用线索。"""
     # 如果文章太长，需要分块处理
-    max_chars = 24000  # 约 8k tokens，兼容本地 32K 上下文模型
+    max_chars = MAX_CHARS_PER_CHUNK  # 约 16k tokens，兼容本地 32K 上下文模型
     chunks = []
     if len(article_text) <= max_chars:
         chunks = [article_text]

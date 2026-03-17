@@ -28,6 +28,7 @@ VLM_MODEL_NAME = _cfg["VLM_MODEL_NAME"]
 VLM_API_KEY = _cfg["VLM_API_KEY"]
 BOCHA_API_KEY = _cfg["BOCHA_API_KEY"]
 MD_BOOK_PATH = _cfg["MD_BOOK_PATH"]
+MAX_CHARS_PER_CHUNK = _cfg.get("MAX_CHARS_PER_CHUNK", 28000)  # 默认每块约16k字符，兼容本地32K上下文模型
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 
@@ -131,7 +132,7 @@ def chat_vlm(
     base_backoff = 2
     for attempt in range(max_retries + 1):
         try:
-            response = requests.post(URL, headers=headers, json=payload, timeout=360)
+            response = requests.post(URL, headers=headers, json=payload, timeout=720)
             response.raise_for_status()
             result = response.json()
             ans = result["choices"][0]["message"]["content"].strip()
