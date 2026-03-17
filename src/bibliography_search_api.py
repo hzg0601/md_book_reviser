@@ -324,9 +324,9 @@ def format_citation_markdown(references: List[str], links: List[Dict[str, str]])
         lines.append("## 相关链接")
         lines.append("")
         for idx, link in enumerate(extra_links, 1):
-            title = link.get("title") or link.get("url", "")
+            title = link.get("title","")
             url = link.get("url", "")
-            lines.append(f"{idx}. {title}. {url}") 
+            lines.append(f"{idx}. {title}. {url}") if title else lines.append(f"{idx}. {url}")
         lines.append("")
 
     return "\n".join(lines)
@@ -366,7 +366,7 @@ def extract_existing_references(content: str) -> List[str]:
             if cleaned:
                 refs.append(cleaned)
 
-    return refs
+    return "\n".join(refs)
 
 
 # ── 解析 LLM 格式化的参考文献文本 ─────────────────────────────
@@ -398,7 +398,7 @@ def parse_formatted_references(
             url = url_match.group(1).rstrip(".,;")
             title = re.sub(r"https?://[^\s)>\]]+", "", entry).strip(" ,.\t")
             if not title:
-                title = url
+                title = ""
             links.append({"title": title, "url": url})
         else:
             references.append(entry)
@@ -447,9 +447,10 @@ def bibliography_search_pipeline(chapter_path: str) -> str:
     logger.info(f"格式化后获得 {len(new_refs)} 条参考文献, {len(new_links)} 条链接")
 
     # 7. 提取原文已有的参考文献，进行去重整合
-    origin_refs = extract_existing_references(content)
-    logger.info(f"原文已有 {len(origin_refs)} 条参考文献")
-    merged_result = deduplicate_and_merge(origin_refs, new_refs, new_links)
+    origin_refs_text = extract_existing_references(content)
+    old_refs, old_links = parse_formatted_references(origin_refs_text)
+    logger.info(f"原文已有 {len(old_refs)} 条参考文献, {len(old_links)} 条链接")
+    merged_result = deduplicate_and_merge(old_refs, new_refs, new_links+old_links)
 
     # 8. 格式化输出（参考文献在前、链接在后，按字母排序）
     md_output = format_citation_markdown(
