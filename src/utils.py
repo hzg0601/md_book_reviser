@@ -1,17 +1,37 @@
 import os
 import sys
+import time
 from loguru import logger
 import base64
 import requests
+import yaml
 
-API_ENDPOINT = os.getenv("API_ENDPOINT", "https://integrate.api.nvidia.com")
-URL = f"{API_ENDPOINT}/v1/chat/completions"
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen/qwen3.5-122b-a10b")
-API_KEY = os.getenv("API_KEY")
-if not API_KEY:
-    logger.error("未找到NVIDIA_API_KEY环境变量，请设置后重试")
-    sys.exit(1)
+# ─────────────── 从 config.yaml 读取配置 ───────────────
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
 
+
+def _load_config(config_path: str = _CONFIG_PATH) -> dict:
+    """读取 config.yaml，根据 mode 字段返回对应环境的配置字典。"""
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    mode = cfg.get("mode", "remote")
+    env_cfg = cfg.get(mode, {})
+    if not env_cfg:
+        raise ValueError(f"config.yaml 中未找到 mode='{mode}' 对应的配置段")
+    return env_cfg
+
+
+_cfg = _load_config()
+
+VLM_API_ENDPOINT = _cfg["VLM_ENDPOINT"]
+VLM_MODEL_NAME = _cfg["VLM_MODEL_NAME"]
+VLM_API_KEY = _cfg["VLM_API_KEY"]
+BOCHA_API_KEY = _cfg["BOCHA_API_KEY"]
+MD_BOOK_PATH = _cfg["MD_BOOK_PATH"]
+
+BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
+
+URL = f"{VLM_API_ENDPOINT}/v1/chat/completions"
 # 设置日志文件路径
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)  # 确保日志目录存在
@@ -47,11 +67,11 @@ logger.add(
 
 
 def chat_vlm(
-    prompt: str = None, 
+    prompt: str = None,
     img_path: str = None,
     table_content: str = None,
     text_content: str = None,
-    ):
+):
     """
     使用request请求与vlm对话，获取图片或表格的描述，其中vlm以vllm以openai的风格启动的；
     若输入是图片，为图片命名，返回形式为“图 xxx”；
@@ -62,8 +82,10 @@ def chat_vlm(
         对话结果
     """
 
-    
-    headers = {"Content-Type": "application/json","Authorization": f"Bearer {API_KEY}"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {VLM_API_KEY}",
+    }
 
     messages = []
 
@@ -103,30 +125,64 @@ def chat_vlm(
         content = f"{prompt}\n\n文本内容如下：\n{text_content}"
         messages.append({"role": "user", "content": content})
 
-    payload = {"model": MODEL_NAME, "messages": messages, "temperature": 0.2}
+    payload = {"model": VLM_MODEL_NAME, "messages": messages, "temperature": 0.2}
 
-    try:
-        response = requests.post(URL, headers=headers, json=payload, timeout=360)
-        response.raise_for_status()
-        result = response.json()
-        ans = result["choices"][0]["message"]["content"].strip()
-        return ans
-    except Exception as e:
-        logger.error(f"请求VLM服务失败: {e}")
-        return ""
+    max_retries = 5
+    base_backoff = 2
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(URL, headers=headers, json=payload, timeout=360)
+            response.raise_for_status()
+            result = response.json()
+            ans = result["choices"][0]["message"]["content"].strip()
+            return ans
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status == 400:
+                body = ""
+                try:
+                    body = e.response.text[:500]
+                except Exception:
+                    pass
+                logger.error(f"请求VLM服务失败(400): {e}\n响应内容: {body}")
+                return ""
+            if status in (429, 502, 503, 504) and attempt < max_retries:
+                wait = base_backoff * (2**attempt)
+                logger.warning(
+                    f"请求返回 {status}，{wait}s 后重试 ({attempt+1}/{max_retries})"
+                )
+                time.sleep(wait)
+            else:
+                logger.error(f"请求VLM服务失败: {e}")
+                return ""
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt < max_retries:
+                wait = base_backoff * (2**attempt)
+                logger.warning(
+                    f"连接异常，{wait}s 后重试 ({attempt+1}/{max_retries}): {e}"
+                )
+                time.sleep(wait)
+            else:
+                logger.error(f"请求VLM服务失败（已重试{max_retries}次）: {e}")
+                return ""
+        except Exception as e:
+            logger.error(f"请求VLM服务失败: {e}")
+            return ""
+
 
 def get_md_path(chapter_path: str):
-    md_paths = [path for path in os.listdir(chapter_path) if path.endswith('.md')]
+    md_paths = [path for path in os.listdir(chapter_path) if path.endswith(".md")]
     if len(md_paths) > 1:
         logger.error(f"{chapter_path}文件夹下有多个md文件，请检查")
         return
     if len(md_paths) == 0:
         logger.error(f"{chapter_path}文件夹下没有md文件")
         return
-        
-    md_path = md_paths[0]   
+
+    md_path = md_paths[0]
     md_path_full = os.path.join(chapter_path, md_path)
     return md_path_full
+
 
 def chapter_reader(md_path: str):
     """
@@ -140,7 +196,7 @@ def chapter_reader(md_path: str):
     if not md_path or not os.path.exists(md_path):
         logger.error(f"章节文件不存在: {md_path}")
         return ""
-    with open(md_path, 'r', encoding='utf-8') as f:
+    with open(md_path, "r", encoding="utf-8") as f:
         chapter_content = f.read()
 
     if not chapter_content.strip():

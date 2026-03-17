@@ -163,7 +163,7 @@ def _parse_vlm_entities(vlm_response: str) -> List[Dict[str, str]]:
     return result
 
 
-def extract_entities(text: str) -> List[Dict[str, str]]:
+def extract_entities(text: str,prompt:str=EXTRACT_ENTITIES_PROMPT) -> List[Dict[str, str]]:
     """
     调用VLM模型从文本中提取算法、模型、文献候选实体。
     返回: [{"name": "...", "type": "algorithm|model|literature", "evidence": "..."}, ...]
@@ -172,7 +172,7 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
         return []
 
     logger.info(f"调用VLM提取实体，文本长度: {len(text)}")
-    vlm_response = chat_vlm(prompt=EXTRACT_ENTITIES_PROMPT, text_content=text)
+    vlm_response = chat_vlm(prompt=prompt, text_content=text)
 
     if not vlm_response:
         logger.warning("VLM返回为空，实体提取失败")

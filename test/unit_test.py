@@ -6,11 +6,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.structure_unifier import img_unifier
 from src.formatter import remove_blank_in_equation, black2normal
-from src.utils import logger
+from src.utils import logger,MD_BOOK_PATH
 from src.name_normalizer import img_name_normalizer, table_name_normalizer
-from bibliography_citation_api import batch_bibliography_recognizer
-
-md_book_path = r"C:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+from src.bibliography_search_api import bibliography_search_pipeline
+md_book_path = MD_BOOK_PATH
 
 
 def batch_chapter_process(md_book_path):
@@ -29,7 +28,7 @@ def batch_chapter_process(md_book_path):
             # img_name_normalizer(chapter_path)
             # table_name_normalizer(chapter_path)
             # remove_blank_in_equation(chapter_path)
-            batch_bibliography_recognizer(chapter_path)
+            bibliography_search_pipeline(chapter_path)
             # black2normal(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
     logger.info(f"处理文件夹 {md_book_path} 完成")

@@ -3,3 +3,4 @@ test/logs
 test/__pycache__
 .vscode
 .ruff_cache
+src/config.yaml
