@@ -1,4 +1,4 @@
-"""
+﻿"""
 使用大模型和检索引擎进行参考文献检索；
 1. 调用utils.py的函数获取本地md文件路径和文件内容；
 2. 按照最大16K文本对段落进行合并；
@@ -195,20 +195,20 @@ FORMAT_SYSTEM_PROMPT = """\
    - arXiv论文示例：Vaswani, Ashish, et al. "Attention Is All You Need." *arXiv preprint*, arXiv:1706.03762, 2017.
 
 2. **知乎文章**：
-   - 格式：作者. "文章标题." *知乎*, 发布日期, URL.
-   - 示例：张三. "深度学习优化器综述." *知乎*, 2023年5月10日, https://zhuanlan.zhihu.com/p/xxx.
+   - 格式："文章标题." *知乎*, 发布日期, URL.
+   - 示例："深度学习优化器综述." *知乎*, 2023年5月10日, https://zhuanlan.zhihu.com/p/xxx.
 
 3. **微信公众号文章**：
-   - 格式：公众号名称. "文章标题." *微信公众号*, 发布日期, URL.
+   - 格式："文章标题." *微信公众号*, 发布日期, URL.
 
 4. **掘金/CSDN/博客园等技术博客**：
-   - 格式：作者. "文章标题." *平台名称*, 发布日期, URL.
+   - 格式："文章标题." *平台名称*, 发布日期, URL.
 
 5. **GitHub仓库**：
-   - 格式：作者/组织. *仓库名*. GitHub, 年份, URL.
+   - 格式：*仓库名*. GitHub, 年份, URL.
 
 6. **官方文档/技术报告**：
-   - 格式：组织名. "文档标题." *网站名*, 年份, URL.
+   - 格式："文档标题." *网站名*, 年份, URL.
 
 输出要求：
 - 每条参考文献单独一行
@@ -311,10 +311,10 @@ def format_citation_markdown(references: List[str], links: List[Dict[str, str]])
     formal_refs.sort(key=lambda r: r.strip().lower())
     extra_links.sort(key=lambda l: l.get("title", "").strip().lower())
 
-    lines = ["# 参考文献与引用", ""]
+    lines = ["## 参考文献与引用", ""]
 
     if formal_refs:
-        lines.append("## 参考文献")
+        lines.append("### 参考文献")
         lines.append("")
         for idx, ref in enumerate(formal_refs, 1):
             lines.append(f"{idx}. {ref}")
@@ -326,7 +326,7 @@ def format_citation_markdown(references: List[str], links: List[Dict[str, str]])
         for idx, link in enumerate(extra_links, 1):
             title = link.get("title") or link.get("url", "")
             url = link.get("url", "")
-            lines.append(f"{idx}. [{title}]({url})")
+            lines.append(f"{idx}. {title}. {url}") 
         lines.append("")
 
     return "\n".join(lines)
@@ -389,7 +389,7 @@ def parse_formatted_references(
             continue
         # 去掉序号前缀  [1] / 1. / 1)
         entry = re.sub(r"^\[?\d+[.\])\s]*", "", line).strip()
-        if not entry:
+        if not entry or entry.startswith("#"):
             continue
 
         # 提取行内 URL
@@ -400,11 +400,8 @@ def parse_formatted_references(
             if not title:
                 title = url
             links.append({"title": title, "url": url})
-
-        # 跳过纯标题行（如 "## 参考文献"）
-        if entry.startswith("#"):
-            continue
-        references.append(entry)
+        else:
+            references.append(entry)
 
     return references, links
 
