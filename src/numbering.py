@@ -102,9 +102,11 @@ def numbering_table(content, chapter_index):
 def numbering_equation(content, chapter_index):
     """
     检测markdown文本中的行间公式，检测到则公式数+1，从1开始给公式编号，编号规则为“章节号+索引 ”,例如：
-        该公式索引为3，章节号为2，如果该公式没有tag编号，为公式添加tag编号“2-3”，其余不变；
+        该公式索引为3，章节号为2，如果该公式没有tag编号，为公式添加tag编号“\tag{2-3}”，其余不变；
     若公式已添加tag编号，忽略该编号，按照上述原则重新编号，例如：
-        原公式名为“2-5”，该公式索引为3，公式名变为“2-3”，其余不变；
+        原公式名为“2-5”，该公式索引为3，公式编号变为“\tag{2-3}”，其余不变；
+    若公式结尾存在以“\text{xxx}”的编号，按照上述原则重新编号，例如：
+        原公式名为“\text{xxx}”，该公式索引为3，公式编号变为“\tag{2-3}”，其余不变；
     """
     eq_idx = [1]
     
@@ -112,9 +114,10 @@ def numbering_equation(content, chapter_index):
         expr = match.group(1)
         new_tag = f"{chapter_index}-{eq_idx[0]}"
         
-        tag_match = re.search(r'\\tag\{(.*?)\}', expr)
-        if tag_match:
-            new_expr = re.sub(r'\\tag\{(.*?)\}', f'\\tag{{{new_tag}}}', expr, count=1)
+        if re.search(r'\\tag\{.*?\}', expr):
+            new_expr = re.sub(r'\\tag\{.*?\}', f'\\\\tag{{{new_tag}}}', expr, count=1)
+        elif re.search(r'\\text\{.*?\}(?=\s*$)', expr):
+            new_expr = re.sub(r'\\text\{.*?\}(?=\s*$)', f'\\\\tag{{{new_tag}}}', expr, count=1)
         else:
             if expr.endswith('\n'):
                 new_expr = expr[:-1] + f" \\tag{{{new_tag}}}\n"
