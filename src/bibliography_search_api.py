@@ -19,6 +19,8 @@ import json
 import time
 import argparse
 import random
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -321,12 +323,16 @@ def format_citation_markdown(references: List[str], links: List[Dict[str, str]])
         lines.append("")
 
     if extra_links:
-        lines.append("## 相关链接")
+        lines.append("### 相关链接")
         lines.append("")
         for idx, link in enumerate(extra_links, 1):
-            title = link.get("title","")
+            title = link.get("title", "")
             url = link.get("url", "")
-            lines.append(f"{idx}. {title}. {url}") if title else lines.append(f"{idx}. {url}")
+            (
+                lines.append(f"{idx}. {title}. {url}")
+                if title
+                else lines.append(f"{idx}. {url}")
+            )
         lines.append("")
 
     return "\n".join(lines)
@@ -369,6 +375,197 @@ def extract_existing_references(content: str) -> List[str]:
     return "\n".join(refs)
 
 
+# ── 请求 URL 获取标题/平台/日期 ─────────────────────────────
+# 已知的异常标题关键词：出现则视为获取失败
+_BAD_TITLE_PATTERNS = re.compile(
+    r"(请在微信客户端|环境异常|请求错误|访问异常|页面不存在|404\s*Not\s*Found"
+    r"|403\s*Forbidden|服务器错误|Server\s*Error|Access\s*Denied"
+    r"|请验证|安全验证|请完成验证|出错了|该内容已被|该页面无法|网络错误"
+    r"|Verify\s*You\s*Are\s*Human|Just\s*a\s*moment)",
+    re.IGNORECASE,
+)
+
+# 常见平台域名到平台名称的映射
+_PLATFORM_MAP = {
+    "zhuanlan.zhihu.com": "知乎",
+    "www.zhihu.com": "知乎",
+    "zhihu.com": "知乎",
+    "mp.weixin.qq.com": "微信公众号",
+    "weixin.qq.com": "微信公众号",
+    "blog.csdn.net": "CSDN",
+    "www.csdn.net": "CSDN",
+    "juejin.cn": "掘金",
+    "www.cnblogs.com": "博客园",
+    "github.com": "GitHub",
+    "arxiv.org": "arXiv",
+    "medium.com": "Medium",
+    "www.jianshu.com": "简书",
+    "segmentfault.com": "SegmentFault",
+}
+
+
+def _detect_platform(url: str) -> str:
+    """根据 URL 域名检测平台名称。"""
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        return ""
+    for domain, name in _PLATFORM_MAP.items():
+        if host == domain or host.endswith("." + domain):
+            return name
+    return ""
+
+
+class _TitleParser(HTMLParser):
+    """轻量 HTML 解析器，只提取 <title> 标签内容。"""
+
+    def __init__(self):
+        super().__init__()
+        self._in_title = False
+        self.title = ""
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+
+
+def _extract_title_from_html(html: str) -> str:
+    """从 HTML 中提取 <title> 内容，失败返回空串。"""
+    parser = _TitleParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        pass
+    return parser.title.strip()
+
+
+def _extract_date_from_html(html: str) -> str:
+    """尝试从 HTML meta 标签或常见模式中提取发布日期。"""
+    # meta property="article:published_time" / name="publishdate"
+    m = re.search(
+        r'(?:property|name)\s*=\s*["\'](?:article:published_time|publishdate|publish_time|PubDate|datePublished)["\']'
+        r'\s+content\s*=\s*["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if not m:
+        # 尝试反向顺序  content=... name=...
+        m = re.search(
+            r'content\s*=\s*["\']([^"\']{6,25})["\']'
+            r'\s+(?:property|name)\s*=\s*["\'](?:article:published_time|publishdate|publish_time|PubDate|datePublished)["\']',
+            html,
+            re.IGNORECASE,
+        )
+    if m:
+        return m.group(1).strip()
+    # 匹配常见日期格式 yyyy-mm-dd / yyyy年mm月dd日
+    m = re.search(r"(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?)", html)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def fetch_url_title(url: str, timeout: int = 15) -> str:
+    """请求 URL 页面并提取标题、平台、日期，组装为 title 字符串。
+
+    对知乎、微信公众号等特殊站点使用针对性的 Headers。
+    如果无法正常获取或标题异常，返回空字符串。
+    """
+    platform = _detect_platform(url)
+
+    # ── 构建 Headers ──
+    # 基础 Headers（模拟桌面浏览器）
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+
+    # 知乎需要额外 cookie / referer 才能拿到正常页面
+    if platform == "知乎":
+        headers["Referer"] = "https://www.zhihu.com/"
+
+    # 微信公众号文章通常需要较完整的浏览器指纹
+    if platform == "微信公众号":
+        headers["Referer"] = "https://mp.weixin.qq.com/"
+
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+
+        # 尝试用 apparent_encoding 解码以正确处理中文
+        if resp.encoding and resp.encoding.lower() == "iso-8859-1":
+            resp.encoding = resp.apparent_encoding
+
+        html = resp.text[:100_000]  # 只取前 100k，避免超大页面
+    except Exception as e:
+        logger.debug(f"请求 URL 失败 [{url}]: {e}")
+        return ""
+
+    # ── 提取标题 ──
+    title = _extract_title_from_html(html)
+
+    # 清理常见后缀：" - 知乎", " | 微信公众号" 等
+    if title:
+        title = re.sub(
+            r"\s*[-|–—_]\s*(知乎|zhihu|微信公众平台|CSDN博客|掘金|博客园|GitHub|简书|SegmentFault).*$",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    # ── 校验标题是否正常 ──
+    if not title or len(title) < 2 or _BAD_TITLE_PATTERNS.search(title):
+        return ""
+
+    # ── 提取日期 ──
+    date = _extract_date_from_html(html)
+
+    # ── 如果未通过域名识别平台，尝试从 HTML meta 获取 ──
+    if not platform:
+        m = re.search(
+            r'(?:property|name)\s*=\s*["\'](?:og:site_name|application-name)["\']'
+            r'\s+content\s*=\s*["\']([^"\']+)["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if not m:
+            m = re.search(
+                r'content\s*=\s*["\']([^"\']+)["\']'
+                r'\s+(?:property|name)\s*=\s*["\'](?:og:site_name|application-name)["\']',
+                html,
+                re.IGNORECASE,
+            )
+        if m:
+            platform = m.group(1).strip()
+
+    # ── 组装结果 ──
+    parts = [f'"{title}."']
+    if platform:
+        parts.append(f"*{platform}*,")
+    if date:
+        parts.append(f"{date},")
+    result = " ".join(parts).rstrip(",")
+    return result
+
+
 # ── 解析 LLM 格式化的参考文献文本 ─────────────────────────────
 def parse_formatted_references(
     formatted_text: str,
@@ -397,8 +594,9 @@ def parse_formatted_references(
         if url_match:
             url = url_match.group(1).rstrip(".,;")
             title = re.sub(r"https?://[^\s)>\]]+", "", entry).strip(" ,.\t")
+            # 如果没有 title，则请求 URL 获取标题/平台/日期
             if not title:
-                title = ""
+                title = fetch_url_title(url)
             links.append({"title": title, "url": url})
         else:
             references.append(entry)
@@ -450,7 +648,7 @@ def bibliography_search_pipeline(chapter_path: str) -> str:
     origin_refs_text = extract_existing_references(content)
     old_refs, old_links = parse_formatted_references(origin_refs_text)
     logger.info(f"原文已有 {len(old_refs)} 条参考文献, {len(old_links)} 条链接")
-    merged_result = deduplicate_and_merge(old_refs, new_refs, new_links+old_links)
+    merged_result = deduplicate_and_merge(old_refs, new_refs, new_links + old_links)
 
     # 8. 格式化输出（参考文献在前、链接在后，按字母排序）
     md_output = format_citation_markdown(
