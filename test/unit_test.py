@@ -9,6 +9,7 @@ from src.formatter import remove_blank_in_equation, black2normal
 from src.utils import logger,MD_BOOK_PATH
 from src.name_normalizer import img_name_normalizer, table_name_normalizer
 from src.bibliography_search_api import bibliography_search_pipeline
+from src.numbering import number_ite
 md_book_path = MD_BOOK_PATH
 
 
@@ -28,7 +29,8 @@ def batch_chapter_process(md_book_path):
             # img_name_normalizer(chapter_path)
             # table_name_normalizer(chapter_path)
             # remove_blank_in_equation(chapter_path)
-            bibliography_search_pipeline(chapter_path)
+            # bibliography_search_pipeline(chapter_path)
+            number_ite(chapter_path)
             # black2normal(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
     logger.info(f"处理文件夹 {md_book_path} 完成")
