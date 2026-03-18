@@ -172,7 +172,7 @@ def numbering_equation(content, chapter_index):
                 if tag_match:
                     old_num = tag_match.group(1)
                 else:
-                    text_match = re.search(r"\\text\{(.*?)\}(?=\s*$)", inner_expr)
+                    text_match = re.search(r"\\text\{([^}]*)\}(?=\s*$)", inner_expr)
                     if text_match:
                         old_num = text_match.group(1)
 
@@ -184,7 +184,7 @@ def numbering_equation(content, chapter_index):
                     )
                 elif text_match:
                     inner_expr = re.sub(
-                        r"\\text\{.*?\}(?=\s*$)",
+                        r"\\text\{([^}]*)\}(?=\s*$)",
                         f"\\\\tag{{{new_tag}}}",
                         inner_expr,
                         count=1,
