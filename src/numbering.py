@@ -3,7 +3,10 @@
 """
 
 import re
-from utils import get_md_path
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.utils import get_md_path,chapter_reader
 
 def map_chapter_index(content):
     """
@@ -226,8 +229,9 @@ def number_ite(chapter_path):
     """
     # 1. 读取markdown文本内容；
     md_path = get_md_path(chapter_path)
-    with open(md_path, "r", encoding="utf-8") as f:
-        content = f.read()
+    content = chapter_reader(md_path)
+    if not content:
+        return
     # 2. 获取该章的章节号，并统一映射为阿拉伯数字，章节从1开始编号；
     chapter_index = map_chapter_index(content)
     # 3. 给img、table、equation编号；
