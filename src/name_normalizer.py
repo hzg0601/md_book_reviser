@@ -53,7 +53,9 @@ def img_name_normalizer(chapter_path):
                     next_line = lines[j].strip()
                     if next_line == "":
                         continue
-                    if next_line.startswith("图 ") or re.search(r"^图\s*\d+", next_line):
+                    if next_line.startswith("图 ") or re.search(
+                        r"^图\s*\d+", next_line
+                    ):
                         lines[j] = "\n"
                     break
                 continue
@@ -146,7 +148,7 @@ def table_name_normalizer(chapter_path):
         if not line.startswith("|") or not line.endswith("|"):
             return 0
         cells = line[1:-1].split("|")
-        return len([cell for cell in cells if cell.strip() != ""])
+        return len(cells)
 
     i = 0
     while i < len(lines):

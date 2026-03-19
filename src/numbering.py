@@ -5,8 +5,10 @@
 import re
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.utils import get_md_path,chapter_reader
+from src.utils import get_md_path, chapter_reader
+
 
 def map_chapter_index(content):
     """
@@ -148,6 +150,13 @@ def numbering_equation(content, chapter_index):
     lines = content.split("\n")
     eq_idx = 1
 
+    # Inline number annotation patterns to strip from formulas (order matters)
+    _inline_num_pats = [
+        r"\s*\\quad\s*\\text\{\(?\d+(?:[.\-]\d+)*\)?\}",  # \quad \text{(1)} or \quad \text{1}
+        r"\s*\\quad\s*\(\d+(?:[.\-]\d+)*\)",  # \quad (7)
+        r"\s*\\text\{\(\d+(?:[.\-]\d+)*\)\}",  # \text{(1)} with parens
+    ]
+
     i = 0
     while i < len(lines):
         if "$$" in lines[i]:
@@ -172,19 +181,48 @@ def numbering_equation(content, chapter_index):
                 if tag_match:
                     old_num = tag_match.group(1)
                 else:
-                    text_match = re.search(r"\\text\{([^}]*)\}(?=\s*$)", inner_expr)
-                    if text_match:
-                        old_num = text_match.group(1)
+                    # \quad \text{(num)} or \quad \text{num}
+                    quad_text_match = re.search(
+                        r"\\quad\s*\\text\{\(?(\d+(?:[.\-]\d+)*)\)?\}", inner_expr
+                    )
+                    if quad_text_match:
+                        old_num = quad_text_match.group(1)
+                    else:
+                        # \quad (num)
+                        quad_paren_match = re.search(
+                            r"\\quad\s*\((\d+(?:[.\-]\d+)*)\)", inner_expr
+                        )
+                        if quad_paren_match:
+                            old_num = quad_paren_match.group(1)
+                        else:
+                            # \text{(num)} with parens at end
+                            text_paren_match = re.search(
+                                r"\\text\{\((\d+(?:[.\-]\d+)*)\)\}(?=\s*$)", inner_expr
+                            )
+                            if text_paren_match:
+                                old_num = text_paren_match.group(1)
+                            else:
+                                # \text{num} without parens at end
+                                text_match = re.search(
+                                    r"\\text\{(\d+(?:[.\-]\d+)*)\}(?=\s*$)", inner_expr
+                                )
+                                if text_match:
+                                    old_num = text_match.group(1)
 
                 new_tag = f"{chapter_index}-{eq_idx}"
+
+                # Strip all inline number annotations before adding the new tag
+                for pat in _inline_num_pats:
+                    inner_expr = re.sub(pat, "", inner_expr)
 
                 if tag_match:
                     inner_expr = re.sub(
                         r"\\tag\{.*?\}", f"\\\\tag{{{new_tag}}}", inner_expr, count=1
                     )
-                elif text_match:
+                elif re.search(r"\\text\{(\d+(?:[.\-]\d+)*)\}(?=\s*$)", inner_expr):
+                    # remaining \text{num} (no parens) at end
                     inner_expr = re.sub(
-                        r"\\text\{([^}]*)\}(?=\s*$)",
+                        r"\\text\{(\d+(?:[.\-]\d+)*)\}(?=\s*$)",
                         f"\\\\tag{{{new_tag}}}",
                         inner_expr,
                         count=1,
