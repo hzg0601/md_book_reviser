@@ -132,7 +132,7 @@ def chat_vlm(
     base_backoff = 2
     for attempt in range(max_retries + 1):
         try:
-            response = requests.post(URL, headers=headers, json=payload, timeout=720)
+            response = requests.post(URL, headers=headers, json=payload, timeout=900)
             response.raise_for_status()
             result = response.json()
             ans = result["choices"][0]["message"]["content"].strip()

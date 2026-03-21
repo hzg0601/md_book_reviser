@@ -128,7 +128,7 @@ def extract_citations(article_text: str) -> list[dict]:
 
     all_citations = []
     for i, chunk in enumerate(chunks):
-        print(f"  正在分析文章第 {i+1}/{len(chunks)} 部分...")
+        logger.info(f"  正在分析文章第 {i+1}/{len(chunks)} 部分...")
         user_prompt = f"请分析以下文章内容，提取所有引用线索：\n\n{chunk}"
         result = chat_vlm(prompt=EXTRACT_SYSTEM_PROMPT, text_content=user_prompt)
 
@@ -139,7 +139,7 @@ def extract_citations(article_text: str) -> list[dict]:
                 citations = json.loads(json_match.group())
                 all_citations.extend(citations)
             except json.JSONDecodeError:
-                print(f"  警告：第 {i+1} 部分的LLM输出解析失败，跳过")
+                logger.info(f"  警告：第 {i+1} 部分的LLM输出解析失败，跳过")
 
     # 去重（基于search_query）
     seen = set()
@@ -162,12 +162,12 @@ def search_references(citations: list[dict]) -> list[dict]:
         ctype = citation.get("type", "other")
         claim = citation.get("claim", "")
 
-        print(f"  [{i+1}/{len(citations)}] 搜索: {query[:60]}...")
+        logger.info(f"  [{i+1}/{len(citations)}] 搜索: {query[:60]}...")
 
         try:
             search_results = bocha_search(query, count=5)
         except Exception as e:
-            print(f"    搜索失败: {e}")
+            logger.info(f"    搜索失败: {e}")
             search_results = []
 
         results.append(
@@ -194,7 +194,7 @@ FORMAT_SYSTEM_PROMPT = """\
 1. **正式出版论文**（arXiv、会议论文、期刊论文）：使用MLA格式
    - 格式：作者姓, 名. "论文标题." *期刊/会议名*, 卷号, 期号, 年份, 页码. DOI/URL.
    - 示例：Dao, Tri, et al. "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness." *Advances in Neural Information Processing Systems*, vol. 35, 2022, pp. 16344-16359.
-   - arXiv论文示例：Vaswani, Ashish, et al. "Attention Is All You Need." *arXiv preprint*, arXiv:1706.03762, 2017.
+   - arXiv论文示例：Vaswani, Ashish, et al. "Attention Is All You Need." *arXiv prelogger.info*, arXiv:1706.03762, 2017.
 
 2. **知乎文章**：
    - 格式："文章标题." *知乎*, 发布日期, URL.
@@ -675,7 +675,7 @@ if __name__ == "__main__":
 
     result_path = bibliography_search_pipeline(args.chapter_path)
     if result_path:
-        print(f"\n✅ 完成！参考文献已保存至: {result_path}")
+        logger.info(f"\n✅ 完成！参考文献已保存至: {result_path}")
     else:
-        print("\n❌ 未能生成参考文献文件，请查看日志了解详情")
+        logger.info("\n❌ 未能生成参考文献文件，请查看日志了解详情")
         sys.exit(1)
