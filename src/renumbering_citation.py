@@ -1,11 +1,11 @@
 ﻿import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 from difflib import SequenceMatcher
 from src.utils import logger, chat_vlm
+from src.bibliography_search_api import _is_url_entry
 
 
 def extract_title_and_author(ref_text):
@@ -80,7 +80,7 @@ def is_similar_by_vlm(ref1, ref2):
     return False
 
 
-def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="vlm"):
+def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="rule"):
     """判断两条引用是否重复。
 
     Args:
@@ -170,26 +170,99 @@ def renumber_citations(file_path):
     original_count = len(ref_lines)
     logger.info(f"Found {original_count} references in {file_path}")
 
-    # Step 1: 去重
+    # Step 1: 提取 "相关链接" 中的学术论文链接，并移至 references_part
+    remaining_links_part = []
+    if links_start_idx < len(content):
+        remaining_links_part.append(content[links_start_idx])  # "### 相关链接\n"
+        for line in content[links_start_idx + 1 :]:
+            if re.match(r"^\d+\.\s", line):
+                url_match = re.search(r"(https?://[^\s)>\]]+)", line)
+                if url_match:
+                    # 将整行传给 _is_url_entry 进行博客/学术等平台的综合判断
+                    if not _is_url_entry(line):
+                        ref_lines.append(line)
+                        continue
+            remaining_links_part.append(line)
+
+    logger.info(f"Moved {len(ref_lines) - original_count} academic links to references")
+
+    # Step 2: 去重
     ref_lines = deduplicate_references(ref_lines)
-    removed = original_count - len(ref_lines)
+    removed = (original_count + (len(ref_lines) - original_count)) - len(
+        ref_lines
+    )  # wait this is just math: moved + original_count = len before deduplication
+
+    # Actually let's just do:
+    total_before_dedup = len(ref_lines)
+    ref_lines = deduplicate_references(ref_lines)
+    removed = total_before_dedup - len(ref_lines)
     logger.info(f"Removed {removed} duplicates, {len(ref_lines)} remaining")
 
-    # Step 2: 按标题排序
+    # Step 3: 按标题排序
     ref_lines = sort_references(ref_lines)
 
-    # Step 3: 重新编号
+    # Step 4: 重新编号
     renumbered = []
     for i, line in enumerate(ref_lines, 1):
-        new_line = re.sub(r"^\d+\.\s", f"{i}. ", line)
+        # 兼容可能有或没有点的情况，这里处理原来的前缀
+        new_line = re.sub(r"^\d+\.\s*", f"{i}. ", line)
         renumbered.append(new_line)
 
     # 组装最终内容
     final_content = content[:start_idx] + non_ref_before + renumbered
     if links_start_idx < len(content):
-        if renumbered and not renumbered[-1].endswith("\n"):
+        if renumbered and not final_content[-1].endswith("\n"):
             final_content.append("\n")
-        final_content.extend(content[links_start_idx:])
+
+        # 提取相关链接，进行去重和排序
+        link_lines = [
+            line for line in remaining_links_part if re.match(r"^\d+\.\s", line)
+        ]
+        non_link_before = []
+        non_link_after = []
+        reached_links = False
+        for line in remaining_links_part:
+            if re.match(r"^\d+\.\s", line):
+                reached_links = True
+            else:
+                if not reached_links:
+                    non_link_before.append(line)
+                else:
+                    non_link_after.append(line)
+
+        # 链接去重
+        unique_links = []
+        seen_urls = set()
+        seen_texts = set()
+        for line in link_lines:
+            text = re.sub(r"^\d+\.\s*", "", line).strip()
+            url_match = re.search(r"(https?://[^\s)>\]]+)", text)
+            if url_match:
+                url = url_match.group(1).rstrip(".,;")
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_links.append(line)
+            else:
+                if text not in seen_texts:
+                    seen_texts.add(text)
+                    unique_links.append(line)
+
+        # 链接排序 (按首字母序)
+        def link_sort_key(line):
+            return re.sub(r"^\d+\.\s*", "", line).strip().lower()
+
+        unique_links.sort(key=link_sort_key)
+
+        # 重新编号 remaining links
+        final_links = non_link_before.copy()
+        link_idx = 1
+        for line in unique_links:
+            new_line = re.sub(r"^\d+\.\s*", f"{link_idx}. ", line)
+            final_links.append(new_line)
+            link_idx += 1
+
+        final_links.extend(non_link_after)
+        final_content.extend(final_links)
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.writelines(final_content)
@@ -206,7 +279,7 @@ def chapter_renumber_pipeline(chapter_path):
 
 if __name__ == "__main__":
     root_file_path = (
-        r"c:\Users\Lenovo\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+        r"c:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models"
     )
     for chapter_dir in os.listdir(root_file_path):
         chapter_path = os.path.join(root_file_path, chapter_dir)

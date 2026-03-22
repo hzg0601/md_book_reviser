@@ -318,8 +318,60 @@ def deduplicate_and_merge(
 
 # ── 格式化输出 ────────────────────────────────────────────────
 def _is_url_entry(ref: str) -> bool:
-    """判断参考文献条目是否为纯链接来源。"""
-    return bool(re.match(r"https?://", ref.strip()))
+    """判断参考文献条目是否为纯链接来源。
+    识别博客等社区平台或纯引用链接（返回 True 放入相关链接），
+    排除 arxiv、researchgate 等包含链接的公开发表学术论文（返回 False 放入参考文献）。
+    """
+    ref = ref.strip()
+
+    # 1. 包含博客、社区或非学术文章特征词（优先判定为相关链接）
+    blog_platforms = [
+        "知乎",
+        "博客园",
+        "微信公众号",
+        "csdn",
+        "掘金",
+        "github",
+        "medium",
+        "简书",
+        "segmentfault",
+        "jianshu",
+        "blog",
+        "bilibili",
+    ]
+    ref_lower = ref.lower()
+    for platform in blog_platforms:
+        if platform in ref_lower:
+            return True
+    
+    # 如果包含链接，但同时包含中文字符，则是相关链接
+    if re.search(r"https?://.", ref_lower) and re.search(r"[\u4e00-\u9fa5]", ref_lower):
+        return True
+
+    # 2. 包含学术特征域名或词汇，判定为学术论文（归为参考文献）
+    academic_factors = [
+        "arxiv",
+        "researchgate",
+        "doi.org",
+        "ieeexplore.ieee.org",
+        "dl.acm.org",
+        "springer.com",
+        "nature.com",
+        "science.org",
+        "sciencedirect.com",
+        "semanticscholar.org",
+        "aclweb.org",
+    ]
+    for factor in academic_factors:
+        if factor in ref_lower:
+            return False
+
+    # 3. 纯 url 开头的或者没有任何其他特征仅包含链接的条目
+    text_without_prefix = re.sub(r"^\d+[\.\)\]]?\s*", "", ref).strip()
+    if bool(re.match(r"^https?://", text_without_prefix)):
+        return True
+
+    return False
 
 
 def format_citation_markdown(references: List[str], links: List[Dict[str, str]]) -> str:
@@ -617,12 +669,16 @@ def parse_formatted_references(
         # 提取行内 URL
         url_match = re.search(r"(https?://[^\s)>\]]+)", entry)
         if url_match:
-            url = url_match.group(1).rstrip(".,;")
-            title = re.sub(r"https?://[^\s)>\]]+", "", entry).strip(" ,.\t")
-            # 如果没有 title，则请求 URL 获取标题/平台/日期
-            if not title:
-                title = fetch_url_title(url)
-            links.append({"title": title, "url": url})
+            # 如果是学术论文（即使有 URL），也归入参考文献而不是纯链接
+            if not _is_url_entry(entry):
+                references.append(entry)
+            else:
+                url = url_match.group(1).rstrip(".,;")
+                title = re.sub(r"https?://[^\s)>\]]+", "", entry).strip(" ,.\t")
+                # 如果没有 title，则请求 URL 获取标题/平台/日期
+                if not title:
+                    title = fetch_url_title(url)
+                links.append({"title": title, "url": url})
         else:
             references.append(entry)
 
@@ -661,9 +717,12 @@ def _parse_citation_markdown(text: str) -> tuple[List[str], List[Dict[str, str]]
         elif section == "links":
             url_match = re.search(r"(https?://[^\s)>\]]+)", cleaned)
             if url_match:
-                url = url_match.group(1).rstrip(".,;")
-                title = re.sub(r"https?://[^\s)>\]]+", "", cleaned).strip(" ,.\t")
-                links.append({"title": title, "url": url})
+                if not _is_url_entry(cleaned):
+                    refs.append(cleaned)
+                else:
+                    url = url_match.group(1).rstrip(".,;")
+                    title = re.sub(r"https?://[^\s)>\]]+", "", cleaned).strip(" ,.\t")
+                    links.append({"title": title, "url": url})
             else:
                 links.append({"title": cleaned, "url": ""})
 
@@ -760,12 +819,12 @@ def bibliography_search_pipeline(chapter_path: str) -> str:
 
 if __name__ == "__main__":
     root_file_path = (
-        r"c:\Users\Lenovo\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+        r"c:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models"
     )
     for chapter_dir in os.listdir(root_file_path):
         chapter_path = os.path.join(root_file_path, chapter_dir)
         if os.path.isdir(chapter_path):
-            if "第二" in chapter_dir or "第五" in chapter_dir or "第三" in chapter_dir:
+            if "第四" in chapter_dir or "第一" in chapter_dir:
 
                 print(f"Processing chapter: {chapter_dir}")
                 bibliography_search_pipeline(chapter_path)
