@@ -223,7 +223,7 @@ FORMAT_SYSTEM_PROMPT = """\
 
 
 def format_references(search_data: list[dict]) -> str:
-    """使用LLM将搜索结果格式化为MLA参考文献。"""
+    """使用LLM将搜索结果格式化为MLA参考文献。数据量大时自动分批调用。"""
     # 准备数据
     formatted_input = []
     for item in search_data:
@@ -244,13 +244,38 @@ def format_references(search_data: list[dict]) -> str:
             )
         formatted_input.append(entry)
 
-    user_prompt = (
-        "请根据以下搜索结果，为每条引用生成标准的参考文献条目。\n\n"
-        f"搜索数据：\n{json.dumps(formatted_input, ensure_ascii=False, indent=2)}"
-    )
+    # 分批：按字符数累积，每批不超过 MAX_CHARS_PER_CHUNK
+    batches = []
+    current_batch = []
+    current_size = 0
+    for entry in formatted_input:
+        entry_str = json.dumps(entry, ensure_ascii=False)
+        entry_len = len(entry_str)
+        if current_batch and current_size + entry_len > MAX_CHARS_PER_CHUNK:
+            batches.append(current_batch)
+            current_batch = []
+            current_size = 0
+        current_batch.append(entry)
+        current_size += entry_len
+    if current_batch:
+        batches.append(current_batch)
 
-    result = chat_vlm(prompt=FORMAT_SYSTEM_PROMPT, text_content=user_prompt)
-    return result
+    if len(batches) > 1:
+        logger.info(f"搜索数据较大，分 {len(batches)} 批格式化")
+
+    results = []
+    for i, batch in enumerate(batches):
+        user_prompt = (
+            "请根据以下搜索结果，为每条引用生成标准的参考文献条目。\n\n"
+            f"搜索数据：\n{json.dumps(batch, ensure_ascii=False, indent=2)}"
+        )
+        result = chat_vlm(prompt=FORMAT_SYSTEM_PROMPT, text_content=user_prompt)
+        if result:
+            results.append(result)
+        if len(batches) > 1:
+            logger.info(f"  第 {i+1}/{len(batches)} 批格式化完成")
+
+    return "\n".join(results)
 
 
 # ── 去重与整合 ────────────────────────────────────────────────
@@ -604,6 +629,79 @@ def parse_formatted_references(
     return references, links
 
 
+# ── 合并已有 citation.markdown ──────────────────────────────────
+def _parse_citation_markdown(text: str) -> tuple[List[str], List[Dict[str, str]]]:
+    """解析 citation.markdown 的完整内容，分别提取参考文献和相关链接。"""
+    refs: List[str] = []
+    links: List[Dict[str, str]] = []
+
+    lines = text.split("\n")
+    section = None  # 'refs' | 'links'
+
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^#{2,3}\s*参考文献", stripped):
+            section = "refs"
+            continue
+        if re.match(r"^#{2,3}\s*相关链接", stripped):
+            section = "links"
+            continue
+        if re.match(r"^#{1,4}\s+", stripped):
+            section = None
+            continue
+        if not stripped:
+            continue
+
+        cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped).strip()
+        if not cleaned:
+            continue
+
+        if section == "refs":
+            refs.append(cleaned)
+        elif section == "links":
+            url_match = re.search(r"(https?://[^\s)>\]]+)", cleaned)
+            if url_match:
+                url = url_match.group(1).rstrip(".,;")
+                title = re.sub(r"https?://[^\s)>\]]+", "", cleaned).strip(" ,.\t")
+                links.append({"title": title, "url": url})
+            else:
+                links.append({"title": cleaned, "url": ""})
+
+    return refs, links
+
+
+def merge_existing_citation(
+    chapter_path: str, new_refs: List[str], new_links: List[Dict[str, str]]
+) -> str:
+    """若 chapter_path 下已存在 citation.markdown，读取其内容，
+    与新的参考文献和链接合并去重后回写，返回输出路径。
+
+    若不存在则直接用新数据写入。
+    """
+    output_path = os.path.join(chapter_path, "citation.markdown")
+
+    old_refs: List[str] = []
+    old_links: List[Dict[str, str]] = []
+
+    if os.path.exists(output_path):
+        with open(output_path, "r", encoding="utf-8") as f:
+            existing_text = f.read()
+        old_refs, old_links = _parse_citation_markdown(existing_text)
+        logger.info(
+            f"已有 citation.markdown: {len(old_refs)} 条参考文献, "
+            f"{len(old_links)} 条链接"
+        )
+
+    merged = deduplicate_and_merge(old_refs, new_refs, new_links + old_links)
+    md_output = format_citation_markdown(merged["references"], merged["links"])
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(md_output)
+    logger.info(f"参考文献已保存到: {output_path}")
+
+    return output_path
+
+
 # ─────────────────────── 主流程 ───────────────────────
 def bibliography_search_pipeline(chapter_path: str) -> str:
     """完整的参考文献检索流程，返回生成的 citation.markdown 路径。"""
@@ -644,38 +742,30 @@ def bibliography_search_pipeline(chapter_path: str) -> str:
     new_refs, new_links = parse_formatted_references(formatted_text)
     logger.info(f"格式化后获得 {len(new_refs)} 条参考文献, {len(new_links)} 条链接")
 
-    # 7. 提取原文已有的参考文献，进行去重整合
+    # 7. 提取原文（md 源文件）中已有的参考文献，合并到新检索结果中
     origin_refs_text = extract_existing_references(content)
-    old_refs, old_links = parse_formatted_references(origin_refs_text)
-    logger.info(f"原文已有 {len(old_refs)} 条参考文献, {len(old_links)} 条链接")
-    merged_result = deduplicate_and_merge(old_refs, new_refs, new_links + old_links)
-
-    # 8. 格式化输出（参考文献在前、链接在后，按字母排序）
-    md_output = format_citation_markdown(
-        merged_result["references"], merged_result["links"]
+    origin_refs, origin_links = parse_formatted_references(origin_refs_text)
+    logger.info(f"原文已有 {len(origin_refs)} 条参考文献, {len(origin_links)} 条链接")
+    merged_result = deduplicate_and_merge(
+        origin_refs, new_refs, new_links + origin_links
     )
 
-    # 9. 写入本地文件 citation.markdown
-    output_path = os.path.join(chapter_path, "citation.markdown")
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(md_output)
-    logger.info(f"参考文献已保存到: {output_path}")
+    # 8. 合并已有 citation.markdown（若存在）并写入
+    output_path = merge_existing_citation(
+        chapter_path, merged_result["references"], merged_result["links"]
+    )
 
     return output_path
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="参考文献检索工具（博查引擎）")
-    parser.add_argument("chapter_path", help="章节目录路径")
-    args = parser.parse_args()
+    root_file_path = (
+        r"c:\Users\Lenovo\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+    )
+    for chapter_dir in os.listdir(root_file_path):
+        chapter_path = os.path.join(root_file_path, chapter_dir)
+        if os.path.isdir(chapter_path):
+            if "第二" in chapter_dir or "第五" in chapter_dir or "第三" in chapter_dir:
 
-    if not BOCHA_API_KEY:
-        logger.error("请设置环境变量 BOCHA_API_KEY 后重试")
-        sys.exit(1)
-
-    result_path = bibliography_search_pipeline(args.chapter_path)
-    if result_path:
-        logger.info(f"\n✅ 完成！参考文献已保存至: {result_path}")
-    else:
-        logger.info("\n❌ 未能生成参考文献文件，请查看日志了解详情")
-        sys.exit(1)
+                print(f"Processing chapter: {chapter_dir}")
+                bibliography_search_pipeline(chapter_path)
