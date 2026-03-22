@@ -1,0 +1,215 @@
+﻿import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+import re
+from difflib import SequenceMatcher
+from src.utils import logger, chat_vlm
+
+
+def extract_title_and_author(ref_text):
+    """从引用行中提取标题和作者。
+
+    处理两种格式:
+    - 有引号: Author. "Title." *Journal*, ...
+    - 无引号: Title. *Journal*, ...
+    """
+    text = re.sub(r"^\d+\.\s*", "", ref_text.strip())
+
+    title_match = re.search(r'"([^"]+)"', text)
+    if title_match:
+        title = title_match.group(1).strip().rstrip(".")
+        author = text[: title_match.start()].strip().rstrip(".")
+    else:
+        # 无引号——取 * 之前的文本作为标题
+        parts = text.split("*", 1)
+        title = parts[0].strip().rstrip(".")
+        author = ""
+
+    return author, title
+
+
+def extract_arxiv_id(ref_text):
+    """提取 arXiv ID，忽略占位符 ID（以 00000 结尾）。"""
+    match = re.search(r"arXiv:(\d+\.\d+)", ref_text)
+    if match:
+        arxiv_id = match.group(1)
+        if arxiv_id.endswith("00000"):
+            return None
+        return arxiv_id
+    return None
+
+
+def is_similar_by_rule(ref1, ref2, title_threshold=0.85, author_threshold=0.8):
+    """基于规则判断两条引用是否为同一篇文章的不同表述。
+
+    比较逻辑：题名相似度 >= title_threshold 且 作者相似度 >= author_threshold。
+    """
+    author1, title1 = extract_title_and_author(ref1)
+    author2, title2 = extract_title_and_author(ref2)
+
+    t1 = title1.lower().strip()
+    t2 = title2.lower().strip()
+
+    title_sim = SequenceMatcher(None, t1, t2).ratio()
+    if title_sim < title_threshold:
+        return False
+
+    a1 = author1.lower().strip()
+    a2 = author2.lower().strip()
+    if a1 and a2:
+        author_sim = SequenceMatcher(None, a1, a2).ratio()
+        return author_sim >= author_threshold
+
+    # 作者信息缺失时，仅依靠题名相似度
+    return True
+
+
+def is_similar_by_vlm(ref1, ref2):
+    """调用 chat_vlm 判断两条引用是否指向同一篇文章（可能是不同名称/格式）。"""
+    prompt = (
+        "你是一位专业的学术文献分析助手。请判断以下两条参考文献是否指向同一篇文章"
+        "（可能是同一文章的不同名称、不同语言翻译或不同引用格式）。\n"
+        "只需回答 'yes' 或 'no'，不要添加任何其他内容。"
+    )
+    text_content = f"参考文献1：\n{ref1.strip()}\n\n参考文献2：\n{ref2.strip()}"
+    result = chat_vlm(prompt=prompt, text_content=text_content)
+    if result:
+        return result.strip().lower().startswith("yes")
+    return False
+
+
+def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="rule"):
+    """判断两条引用是否重复。
+
+    Args:
+        method: 'rule' — 基于规则（默认）；'vlm' — 调用 VLM 模型判断。
+
+    判断流程:
+    1. 相同 arXiv ID（非占位符）
+    2. 题名完全相同
+    3. 根据 method 选择规则匹配或 VLM 匹配
+    """
+    # 相同 arXiv ID
+    arxiv1 = extract_arxiv_id(ref1)
+    arxiv2 = extract_arxiv_id(ref2)
+    if arxiv1 and arxiv2 and arxiv1 == arxiv2:
+        return True
+
+    author1, title1 = extract_title_and_author(ref1)
+    author2, title2 = extract_title_and_author(ref2)
+
+    t1 = title1.lower().strip()
+    t2 = title2.lower().strip()
+
+    # 题名完全相同
+    if t1 == t2:
+        return True
+
+    # 根据 method 选择匹配策略
+    if method == "vlm":
+        return is_similar_by_vlm(ref1, ref2)
+    else:
+        return is_similar_by_rule(ref1, ref2, title_threshold, author_threshold)
+
+
+def deduplicate_references(ref_lines):
+    """去重，保留首次出现的条目。"""
+    unique = []
+    for ref in ref_lines:
+        dup = False
+        for existing in unique:
+            if is_duplicate(ref, existing):
+                dup = True
+                logger.info(f"  [去重] {ref.strip()[:90]}...")
+                break
+        if not dup:
+            unique.append(ref)
+    return unique
+
+
+def sort_references(ref_lines):
+    """按标题字母序排序。"""
+
+    def sort_key(ref):
+        _, title = extract_title_and_author(ref)
+        return title.lower()
+
+    return sorted(ref_lines, key=sort_key)
+
+
+def renumber_citations(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.readlines()
+
+    # 定位 "参考文献" 和 "相关链接" 区段
+    start_idx = -1
+    links_start_idx = len(content)
+
+    for i, line in enumerate(content):
+        if line.strip() == "### 参考文献":
+            start_idx = i + 1
+        elif line.strip() == "### 相关链接":
+            links_start_idx = i
+            break
+
+    if start_idx == -1:
+        logger.info("Could not find '参考文献' section.")
+        return
+
+    # 分离引用行与前置空行
+    references_part = content[start_idx:links_start_idx]
+    ref_lines = [line for line in references_part if re.match(r"^\d+\.\s", line)]
+    non_ref_before = []
+    for line in references_part:
+        if re.match(r"^\d+\.\s", line):
+            break
+        non_ref_before.append(line)
+
+    original_count = len(ref_lines)
+    logger.info(f"Found {original_count} references in {file_path}")
+
+    # Step 1: 去重
+    ref_lines = deduplicate_references(ref_lines)
+    removed = original_count - len(ref_lines)
+    logger.info(f"Removed {removed} duplicates, {len(ref_lines)} remaining")
+
+    # Step 2: 按标题排序
+    ref_lines = sort_references(ref_lines)
+
+    # Step 3: 重新编号
+    renumbered = []
+    for i, line in enumerate(ref_lines, 1):
+        new_line = re.sub(r"^\d+\.\s", f"{i}. ", line)
+        renumbered.append(new_line)
+
+    # 组装最终内容
+    final_content = content[:start_idx] + non_ref_before + renumbered
+    if links_start_idx < len(content):
+        if renumbered and not renumbered[-1].endswith("\n"):
+            final_content.append("\n")
+        final_content.extend(content[links_start_idx:])
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(final_content)
+
+    logger.info(f"Done: {original_count} -> {len(renumbered)} references")
+
+
+def chapter_renumber_pipeline(chapter_path):
+    for file in os.listdir(chapter_path):
+        if file.endswith(".markdown"):
+            file_path = os.path.join(chapter_path, file)
+            renumber_citations(file_path)
+
+
+if __name__ == "__main__":
+    root_file_path = (
+        r"c:\Users\Lenovo\OneDrive\notion\Full Stack Algorithm of Large Language Models"
+    )
+    for chapter_dir in os.listdir(root_file_path):
+        chapter_path = os.path.join(root_file_path, chapter_dir)
+        if os.path.isdir(chapter_path):
+            logger.info(f"Processing chapter: {chapter_dir}")
+            chapter_renumber_pipeline(chapter_path)

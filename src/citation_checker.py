@@ -26,13 +26,36 @@ _SKIP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# 书籍条目关键词——包含出版社/出版商名称的条目视为书籍，跳过不检查
+_BOOK_PATTERNS = re.compile(
+    r"(出版社|出版集团|出版公司"
+    r"|\bPress\b|\bPublish(?:er|ing|ers)\b|\bVerlag\b|\bÉditions\b"
+    r"|\bO'Reilly\b|\bSpringer\b|\bWiley\b|\bElsevier\b|\bManning\b"
+    r"|\bPearson\b|\bMcGraw.Hill\b|\bAddison.Wesley\b|\bPrentice.Hall\b"
+    r"|\bAcademic Press\b|\bMorgan Kaufmann\b|\bCambridge University\b"
+    r"|\bOxford University\b|\bMIT Press\b|\bPHI\b"
+    r"|\b人民邮电\b|\b机械工业\b|\b电子工业\b|\b清华大学\b|\b科学出版\b"
+    r"|\b高等教育\b|\b人民出版\b|\b中信出版\b|\b华章\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_book_entry(entry: str) -> bool:
+    """判断参考文献条目是否为书籍类型。"""
+    return bool(_BOOK_PATTERNS.search(entry))
+
 
 def _is_paper_entry(entry: str) -> bool:
-    """判断参考文献条目是否为论文类型（而非博客/链接等）。"""
+    """判断参考文献条目是否为需要 MLA 检查的论文类型。
+    排除博客/链接、纯 URL 和书籍条目。
+    """
     if _SKIP_PATTERNS.search(entry):
         return False
     # 纯 URL 行也跳过
     if re.match(r"^https?://", entry.strip()):
+        return False
+    # 书籍条目跳过
+    if _is_book_entry(entry):
         return False
     return True
 
@@ -223,7 +246,71 @@ def fix_non_mla_entry(entry: dict) -> str:
     fixed = fixed.strip().strip('"').strip("'")
     fixed = re.sub(r"^\[?\d+[.\])\s]*", "", fixed).strip()
 
+    if not _validate_fixed_entry(original, fixed):
+        logger.warning(f"  修正结果未通过校验，保留原文")
+        return original
+
     return fixed
+
+
+# ─────────────────────── 修正结果校验 ───────────────────────
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+_EXPLAIN_RE = re.compile(
+    r"(以下是|修正后|格式化后|说明[:：]|注[:：]|解释[:：]|原因[:：]|备注[:：]|\bhere is\b|\bnote:\b|\bexplanation:\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text))
+
+
+def _validate_fixed_entry(original: str, fixed: str) -> bool:
+    """校验 VLM 修正后的参考文献是否合理，不合理则返回 False。
+
+    检查项:
+    1. 空内容
+    2. 语言不一致（英文原文出现中文 / 中文原文全变英文）
+    3. 包含解释性前缀
+    4. 多行输出（应为单条条目）
+    5. 长度异常（过短或远超原文）
+    """
+    if not fixed:
+        return False
+
+    # --- 语言一致性 ---
+    orig_has_cjk = _has_cjk(original)
+    fixed_has_cjk = _has_cjk(fixed)
+    if not orig_has_cjk and fixed_has_cjk:
+        # 原文无中文，修正后出现中文
+        logger.info("  校验失败: 原文为英文但修正结果含中文")
+        return False
+    if orig_has_cjk and not fixed_has_cjk:
+        # 原文含中文，修正后完全无中文
+        logger.info("  校验失败: 原文含中文但修正结果全为英文")
+        return False
+
+    # --- 包含解释性文字 ---
+    if _EXPLAIN_RE.search(fixed):
+        logger.info("  校验失败: 修正结果包含解释性文字")
+        return False
+
+    # --- 多行输出 ---
+    meaningful_lines = [l for l in fixed.splitlines() if l.strip()]
+    if len(meaningful_lines) > 1:
+        logger.info("  校验失败: 修正结果包含多行")
+        return False
+
+    # --- 长度异常 ---
+    if len(fixed) < 20:
+        logger.info("  校验失败: 修正结果过短")
+        return False
+    if len(fixed) > len(original) * 3 and len(fixed) > 500:
+        logger.info("  校验失败: 修正结果长度远超原文")
+        return False
+
+    return True
 
 
 # ─────────────────────── 步骤3：回写 citation.markdown ───────────────────────
@@ -267,13 +354,15 @@ def citation_check_pipeline(chapter_path: str) -> bool:
         return False
     logger.info(f"提取到 {len(all_entries)} 条参考文献")
 
-    # 3. 过滤出论文条目，跳过知乎/博客/链接等非论文条目
+    # 3. 过滤出论文条目，跳过知乎/博客/链接/书籍等非论文条目
     paper_indices = []  # 论文条目在 all_entries 中的索引
     paper_entries = []
     for i, entry in enumerate(all_entries):
         if _is_paper_entry(entry):
             paper_indices.append(i)
             paper_entries.append(entry)
+        elif _is_book_entry(entry):
+            logger.info(f"  跳过书籍条目 [{i+1}]: {entry[:50]}...")
         else:
             logger.info(f"  跳过非论文条目 [{i+1}]: {entry[:50]}...")
 
@@ -308,7 +397,10 @@ def citation_check_pipeline(chapter_path: str) -> bool:
                 f"  [{pidx+1}/{len(paper_entries)}] 修正: {paper_entries[pidx][:50]}..."
             )
             fixed_text = fix_non_mla_entry(item)
-            fixed_map[pidx] = fixed_text
+            if fixed_text != item.get("original", ""):
+                fixed_map[pidx] = fixed_text
+            else:
+                logger.info(f"  [{pidx+1}] 保留原文（修正未通过校验）")
             time.sleep(1)
 
     # 6. 将修正结果映射回 all_entries
