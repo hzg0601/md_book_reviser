@@ -80,7 +80,7 @@ def is_similar_by_vlm(ref1, ref2):
     return False
 
 
-def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="rule"):
+def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="vlm"):
     """判断两条引用是否重复。
 
     Args:
