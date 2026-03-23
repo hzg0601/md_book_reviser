@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 from difflib import SequenceMatcher
 from src.utils import logger, chat_vlm
-from src.bibliography_search_api import _is_url_entry
+from src.bibliography_search_api import _is_url_entry, _is_url_entry_vlm
 
 
 def extract_title_and_author(ref_text):
@@ -80,7 +80,7 @@ def is_similar_by_vlm(ref1, ref2):
     return False
 
 
-def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="rule"):
+def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method="vlm"):
     """判断两条引用是否重复。
 
     Args:
@@ -170,21 +170,45 @@ def renumber_citations(file_path):
     original_count = len(ref_lines)
     logger.info(f"Found {original_count} references in {file_path}")
 
-    # Step 1: 提取 "相关链接" 中的学术论文链接，并移至 references_part
+    # Step 1: 双向重分类 —— 基于 VLM 对两个区段的每个条目重新判断
+    #   (a) 参考文献区中被误归的相关链接 → 移入 links_to_move_out
+    #   (b) 相关链接区中被误归的学术论文 → 移入 ref_lines
+    links_to_move_out: list[str] = []  # 从参考文献移出的条目（将追加到相关链接区）
+
+    new_ref_lines: list[str] = []
+    for line in ref_lines:
+        if _is_url_entry_vlm(line):  # VLM 认为不是正式学术论文
+            logger.info(f"VLM 将参考文献移入相关链接: {line.strip()[:90]}")
+            links_to_move_out.append(line)
+        else:
+            new_ref_lines.append(line)
+    ref_lines = new_ref_lines
+
     remaining_links_part = []
     if links_start_idx < len(content):
         remaining_links_part.append(content[links_start_idx])  # "### 相关链接\n"
         for line in content[links_start_idx + 1 :]:
             if re.match(r"^\d+\.\s", line):
-                url_match = re.search(r"(https?://[^\s)>\]]+)", line)
-                if url_match:
-                    # 将整行传给 _is_url_entry 进行博客/学术等平台的综合判断
-                    if not _is_url_entry(line):
-                        ref_lines.append(line)
-                        continue
+                # VLM 判断：此相关链接实为学术论文 → 移入参考文献
+                if not _is_url_entry_vlm(line):
+                    logger.info(f"VLM 将相关链接移入参考文献: {line.strip()[:90]}")
+                    ref_lines.append(line)
+                    continue
             remaining_links_part.append(line)
 
-    logger.info(f"Moved {len(ref_lines) - original_count} academic links to references")
+    # 将从参考文献移出的条目追加到相关链接区（在标题行之后插入）
+    if links_to_move_out:
+        insert_pos = 1  # 标题行之后
+        for extra_line in links_to_move_out:
+            # 去掉原编号，追加为无序条目（重编号在后续统一处理）
+            remaining_links_part.insert(insert_pos, extra_line)
+            insert_pos += 1
+
+    moved_in = len(ref_lines) - original_count + len(links_to_move_out)
+    logger.info(
+        f"重分类完成: {len(links_to_move_out)} 条从参考文献移出，"
+        f"{len(ref_lines) - original_count + len(links_to_move_out)} 条从相关链接移入"
+    )
 
     # Step 2: 去重
     ref_lines = deduplicate_references(ref_lines)

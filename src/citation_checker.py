@@ -17,55 +17,16 @@ from src.utils import logger, chat_vlm, MD_BOOK_PATH
 from src.bibliography_search_api import bocha_search
 
 
-# ─────────────── 非论文条目的快速过滤 ───────────────
-# 包含这些域名/关键词的条目视为博客/链接，跳过不检查
-_SKIP_PATTERNS = re.compile(
-    r"(知乎|zhihu\.com|weixin\.qq\.com|微信公众号|csdn\.net|juejin\.cn|"
-    r"cnblogs\.com|jianshu\.com|segmentfault\.com|medium\.com|博客园|掘金|简书|"
-    r"YouTube|youtube\.com|bilibili\.com|stackoverflow\.com)",
-    re.IGNORECASE,
-)
-
-# 书籍条目关键词——包含出版社/出版商名称的条目视为书籍，跳过不检查
-_BOOK_PATTERNS = re.compile(
-    r"(出版社|出版集团|出版公司"
-    r"|\bPress\b|\bPublish(?:er|ing|ers)\b|\bVerlag\b|\bÉditions\b"
-    r"|\bO'Reilly\b|\bSpringer\b|\bWiley\b|\bElsevier\b|\bManning\b"
-    r"|\bPearson\b|\bMcGraw.Hill\b|\bAddison.Wesley\b|\bPrentice.Hall\b"
-    r"|\bAcademic Press\b|\bMorgan Kaufmann\b|\bCambridge University\b"
-    r"|\bOxford University\b|\bMIT Press\b|\bPHI\b"
-    r"|\b人民邮电\b|\b机械工业\b|\b电子工业\b|\b清华大学\b|\b科学出版\b"
-    r"|\b高等教育\b|\b人民出版\b|\b中信出版\b|\b华章\b)",
-    re.IGNORECASE,
-)
-
-
-def _is_book_entry(entry: str) -> bool:
-    """判断参考文献条目是否为书籍类型。"""
-    return bool(_BOOK_PATTERNS.search(entry))
-
-
-def _is_paper_entry(entry: str) -> bool:
-    """判断参考文献条目是否为需要 MLA 检查的论文类型。
-    排除博客/链接、纯 URL 和书籍条目。
-    """
-    if _SKIP_PATTERNS.search(entry):
-        return False
-    # 纯 URL 行也跳过
-    if re.match(r"^https?://", entry.strip()):
-        return False
-    # 书籍条目跳过
-    if _is_book_entry(entry):
-        return False
-    return True
-
-
 # ─────────────────────── Prompts ───────────────────────
 
 MLA_CHECK_PROMPT = """\
-你是一位专业的学术文献格式审校专家。请逐条检查以下学术论文参考文献是否符合MLA（Modern Language Association）格式规范。
+你是一位专业的学术文献格式审校专家。请逐条检查以下提供的文献条目。
 
-MLA格式核心要求（仅针对学术论文）：
+判断逻辑：
+1. 首先判断该条目是否属于学术文献（即：期刊、会议、arXiv等预印本论文，或书籍）。如果不是（例如普通的网页链接、博客、代码仓库等），将其判定为“相关链接”。
+2. 如果是学术文献，则判断其是否符合以下MLA（Modern Language Association）格式规范。
+
+MLA格式核心要求（仅针对学术文献）：
 1. **期刊论文**：作者姓, 名. "论文标题." *期刊名*, 卷号, 期号, 年份, 页码. DOI/URL.
 2. **会议论文**：作者姓, 名. "论文标题." *会议名称*, 年份, 页码.
 3. **arXiv论文**：作者姓, 名. "论文标题." *arXiv preprint*, arXiv:编号, 年份.
@@ -77,30 +38,32 @@ MLA格式核心要求（仅针对学术论文）：
 - 作者姓名顺序错误（MLA要求：姓, 名）
 - 缺少发表年份
 - 论文标题未加引号
-- 期刊/会议名未用斜体标记（Markdown中用 *斜体*）
+- 期刊/会议/书名未用斜体标记（Markdown中用 *斜体*）
 - 缺少卷号、期号、页码等信息
 - arXiv论文缺少arXiv编号
 
 请对每一条参考文献进行判断，以JSON数组格式返回。每个元素包含：
 - "index": 该条目的序号（从1开始）
 - "original": 原始参考文献文本
-- "is_mla": 布尔值，true表示符合MLA格式，false表示不符合
-- "issues": 如果不符合，列出具体问题（字符串），符合则为空字符串
-- "search_query": 如果不符合MLA格式，提供一个用于搜索该论文完整信息的最佳关键词（优先使用论文英文标题+作者），符合则为空字符串
+- "type": 字符串，"文献" 或 "相关链接"
+- "is_mla": 布尔值，如果是"文献"且符合MLA格式则为true，不符合为false。如果是"相关链接"，此项固定填false。
+- "issues": 如果是"文献"且不符合，列出具体问题（字符串）；否则为空字符串。
+- "search_query": 如果是"文献"且不符合MLA格式，提供一个用于搜索该论文/书籍完整信息的最佳关键词（优先使用标题+作者）；否则为空字符串。
 
 仅输出JSON数组，不要包含其他内容。示例：
 ```json
 [
-  {"index": 1, "original": "...", "is_mla": true, "issues": "", "search_query": ""},
-  {"index": 2, "original": "...", "is_mla": false, "issues": "缺少作者信息和发表年份", "search_query": "FlashAttention Fast and Memory-Efficient Exact Attention Tri Dao 2022"}
+  {"index": 1, "original": "...", "type": "文献", "is_mla": true, "issues": "", "search_query": ""},
+  {"index": 2, "original": "...", "type": "文献", "is_mla": false, "issues": "缺少作者信息和发表年份", "search_query": "FlashAttention Fast and Memory-Efficient Exact Attention Tri Dao 2022"},
+  {"index": 3, "original": "...", "type": "相关链接", "is_mla": false, "issues": "", "search_query": ""}
 ]
 ```
 """
 
 MLA_FORMAT_PROMPT = """\
-你是一位专业的学术文献格式化专家。请根据以下提供的原始参考文献信息和搜索结果，将该学术论文参考文献修正为标准的MLA格式。
+你是一位专业的学术文献格式化专家。请根据以下提供的原始参考文献信息和搜索结果，将该学术文献参考文献修正为标准的MLA格式。
 
-MLA格式规范（学术论文）：
+MLA格式规范（学术文献）：
 1. **期刊论文**：作者姓, 名. "论文标题." *期刊名*, 卷号, 期号, 年份, 页码. DOI/URL.
 2. **会议论文**：作者姓, 名. "论文标题." *会议名称*, 年份, 页码.
 3. **arXiv论文**：作者姓, 名. "论文标题." *arXiv preprint*, arXiv:编号, 年份.
@@ -128,13 +91,13 @@ def read_citation_file(chapter_path: str) -> str:
 
 
 def extract_ref_section(content: str):
-    """从 citation.markdown 中提取"参考文献"小节的条目列表和小节的起止位置。
+    """从 citation.markdown 中提取"参考文献"和"相关链接"小节的条目列表和小节的整体起止位置。
 
     Returns:
         (ref_entries, section_start, section_end)
-        - ref_entries: list[str]，每条参考文献文本（去掉序号前缀）
-        - section_start: int，参考文献小节在原文中的字符起始位置
-        - section_end: int，参考文献小节在原文中的字符结束位置
+        - ref_entries: list[str]，所有提取的条目列表（去掉序号前缀）
+        - section_start: int，这两小节在原文中的字符起始位置
+        - section_end: int，这两小节在原文中的字符结束位置
     """
     pattern = re.compile(r"^###\s*参考文献\s*$", re.MULTILINE)
     m = pattern.search(content)
@@ -143,7 +106,19 @@ def extract_ref_section(content: str):
 
     section_start = m.start()
     rest = content[m.end() :]
-    end_match = re.search(r"^#{2,3}\s+", rest, re.MULTILINE)
+
+    # 查找之后的下一个标题（除去“相关链接”）作为整体的结束位置
+    # 我们希望把“参考文献”和“相关链接”一起提取出来，然后重新组织
+    end_match = None
+
+    # 按照正则遍历后面的标题
+    heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
+    for h in heading_pattern.finditer(rest):
+        title = h.group(1).strip()
+        if title != "相关链接":
+            end_match = h
+            break
+
     if end_match:
         section_end = m.end() + end_match.start()
         section_body = rest[: end_match.start()]
@@ -152,9 +127,12 @@ def extract_ref_section(content: str):
         section_body = rest
 
     ref_entries = []
+    # 过滤掉"### 相关链接"这行以及空行等
     for line in section_body.split("\n"):
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped == "### 相关链接":
             continue
         cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
         cleaned = re.sub(r"^[-*]\s+", "", cleaned)
@@ -316,12 +294,20 @@ def _validate_fixed_entry(original: str, fixed: str) -> bool:
 # ─────────────────────── 步骤3：回写 citation.markdown ───────────────────────
 
 
-def rebuild_ref_section(ref_entries: list[str]) -> str:
-    """将修正后的参考文献列表重新组装为 markdown 小节文本。"""
+def rebuild_ref_section(ref_entries: list[str], link_entries: list[str] = None) -> str:
+    """将修正后的参考文献列表和相关链接重新组装为 markdown 小节文本。"""
     lines = ["### 参考文献", ""]
     for idx, ref in enumerate(ref_entries, 1):
         lines.append(f"{idx}. {ref}")
     lines.append("")
+
+    if link_entries:
+        lines.append("### 相关链接")
+        lines.append("")
+        for idx, link in enumerate(link_entries, 1):
+            lines.append(f"{idx}. {link}")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -337,7 +323,7 @@ def write_citation_file(chapter_path: str, new_content: str):
 
 
 def citation_check_pipeline(chapter_path: str) -> bool:
-    """对单个章节的 citation.markdown 中的论文条目进行 MLA 格式检查与修正。"""
+    """对单个章节的 citation.markdown 中的文献条目进行 MLA 格式检查与修正。"""
     logger.info(f"{'='*60}")
     logger.info(f"开始检查: {chapter_path}")
 
@@ -354,72 +340,76 @@ def citation_check_pipeline(chapter_path: str) -> bool:
         return False
     logger.info(f"提取到 {len(all_entries)} 条参考文献")
 
-    # 3. 过滤出论文条目，跳过知乎/博客/链接/书籍等非论文条目
-    paper_indices = []  # 论文条目在 all_entries 中的索引
-    paper_entries = []
-    for i, entry in enumerate(all_entries):
-        if _is_paper_entry(entry):
-            paper_indices.append(i)
-            paper_entries.append(entry)
-        elif _is_book_entry(entry):
-            logger.info(f"  跳过书籍条目 [{i+1}]: {entry[:50]}...")
-        else:
-            logger.info(f"  跳过非论文条目 [{i+1}]: {entry[:50]}...")
-
-    if not paper_entries:
-        logger.info("无论文条目需要检查")
-        return True
-
-    logger.info(f"其中 {len(paper_entries)} 条为论文，将进行 MLA 格式检查")
-
-    # 4. 调用 VLM 检查论文条目的 MLA 格式
-    logger.info("正在调用 VLM 检查 MLA 格式...")
-    checks = check_mla_format(paper_entries)
+    # 3. 调用 VLM 检查分类条目以及 MLA 格式
+    logger.info("正在调用 VLM 检查及分类条目...")
+    checks = check_mla_format(all_entries)
     if not checks:
         logger.warning("VLM 检查未返回有效结果，跳过修正")
         return False
 
-    # 统计不合规条目
-    non_mla = [c for c in checks if not c.get("is_mla", True)]
-    logger.info(f"检查结果: {len(checks)} 条论文中有 {len(non_mla)} 条不符合 MLA 格式")
+    # 4. 根据分类结果分离文献和相关链接，找出不符合规范的条目
+    paper_entries = []
+    link_entries = []
+    non_mla = []
 
-    if not non_mla:
-        logger.info("所有论文参考文献均符合 MLA 格式，无需修改")
-        return True
+    # 为了防止 VLM 输出序号有误差或截断文本，按照 index 严格映射回 all_entries
+    for item in checks:
+        idx = item.get("index", 1) - 1
+        if 0 <= idx < len(all_entries):
+            orig = all_entries[idx]
+            item["original"] = orig
 
-    # 5. 逐条修正不合规的论文条目
-    # check 中的 index 是相对于 paper_entries 的（1-based）
-    fixed_map = {}  # paper_entries 中的索引 -> 修正后文本
+        # 分类
+        item_type = item.get("type", "文献")
+        if item_type == "相关链接":
+            link_entries.append(item["original"])
+        else:
+            # 记录它在 paper_entries 中的位置
+            paper_idx = len(paper_entries)
+            paper_entries.append(item["original"])
+            item["paper_idx"] = paper_idx
+
+            if not item.get("is_mla", True):
+                non_mla.append(item)
+
+    logger.info(
+        f"分类结果: 文献 {len(paper_entries)} 条，相关链接 {len(link_entries)} 条"
+    )
+
+    if non_mla:
+        logger.info(f"共有 {len(non_mla)} 条文献不符合 MLA 格式，准备搜索并修正...")
+    else:
+        logger.info("所有文献均符合 MLA 格式，无需修改")
+
+    # 5. 逐条修正不合规的文献条目
+    fixed_count = 0
     for item in non_mla:
-        pidx = item.get("index", 0) - 1  # paper_entries 中的 0-based 索引
-        if 0 <= pidx < len(paper_entries):
-            logger.info(
-                f"  [{pidx+1}/{len(paper_entries)}] 修正: {paper_entries[pidx][:50]}..."
-            )
-            fixed_text = fix_non_mla_entry(item)
-            if fixed_text != item.get("original", ""):
-                fixed_map[pidx] = fixed_text
-            else:
-                logger.info(f"  [{pidx+1}] 保留原文（修正未通过校验）")
-            time.sleep(1)
+        orig = item["original"]
+        paper_idx = item["paper_idx"]
+        logger.info(f"  [{paper_idx+1}/{len(paper_entries)}] 修正: {orig[:50]}...")
 
-    # 6. 将修正结果映射回 all_entries
-    for pidx, fixed_text in fixed_map.items():
-        real_idx = paper_indices[pidx]
-        all_entries[real_idx] = fixed_text
-        logger.info(f"  条目 {real_idx+1}: 已修正")
+        fixed_text = fix_non_mla_entry(item)
+        if fixed_text != orig:
+            paper_entries[paper_idx] = fixed_text
+            fixed_count += 1
+            logger.info(f"  已修正")
+        else:
+            logger.info(f"  保留原文")
+        time.sleep(1)
 
-    # 7. 重建参考文献小节，替换原文中对应区域，回写文件
-    new_section = rebuild_ref_section(all_entries)
+    # 6. 重建参考文献小节，替换原文中对应区域，回写文件
+    new_section = rebuild_ref_section(paper_entries, link_entries)
     new_content = content[:sec_start] + new_section + content[sec_end:]
     write_citation_file(chapter_path, new_content)
 
-    logger.info(f"完成: 修正了 {len(fixed_map)} 条论文参考文献")
+    logger.info(
+        f"完成: 修正了 {fixed_count} 条文献参考文献，提取了 {len(link_entries)} 条相关链接"
+    )
     return True
 
 
 def batch_citation_check(book_path: str = None):
-    """遍历书籍目录下所有章节，逐一执行论文 MLA 格式检查与修正。"""
+    """遍历目录下所有章节，逐一执行论文 MLA 格式检查与修正。"""
     if book_path is None:
         book_path = MD_BOOK_PATH
 

@@ -320,9 +320,10 @@ def deduplicate_and_merge(
 def _is_url_entry(ref: str) -> bool:
     """判断参考文献条目是否为纯链接来源。
     识别博客等社区平台或纯引用链接（返回 True 放入相关链接），
-    排除 arxiv、researchgate 等包含链接的公开发表学术论文（返回 False 放入参考文献）。
+    排除 arxiv 等包含链接的公开发表学术论文（返回 False 放入参考文献）。
     """
     ref = ref.strip()
+    ref_lower = ref.lower()
 
     # 1. 包含博客、社区或非学术文章特征词（优先判定为相关链接）
     blog_platforms = [
@@ -338,17 +339,33 @@ def _is_url_entry(ref: str) -> bool:
         "jianshu",
         "blog",
         "bilibili",
+        "digitalocean",
     ]
-    ref_lower = ref.lower()
     for platform in blog_platforms:
         if platform in ref_lower:
             return True
-    
-    # 如果包含链接，但同时包含中文字符，则是相关链接
+
+    # 2. 包含链接且包含中文字符 → 相关链接
     if re.search(r"https?://.", ref_lower) and re.search(r"[\u4e00-\u9fa5]", ref_lower):
         return True
 
-    # 2. 包含学术特征域名或词汇，判定为学术论文（归为参考文献）
+    # 提取 URL 的 host 与 path，用于后续精确判断
+    host = ""
+    path = ""
+    url_match_obj = re.search(r"https?://[^\s)>\]\"']+", ref)
+    if url_match_obj:
+        try:
+            _parsed = urlparse(url_match_obj.group(0))
+            host = (_parsed.hostname or "").lower()
+            path = _parsed.path.lower()
+        except Exception:
+            pass
+
+    # 3. ResearchGate 图片/图表下载页（/figure/）不是正式学术论文
+    if host and "researchgate" in host and "/figure/" in path:
+        return True
+
+    # 4. 包含学术特征域名或词汇，判定为学术论文（归为参考文献）
     academic_factors = [
         "arxiv",
         "researchgate",
@@ -366,12 +383,78 @@ def _is_url_entry(ref: str) -> bool:
         if factor in ref_lower:
             return False
 
-    # 3. 纯 url 开头的或者没有任何其他特征仅包含链接的条目
+    # 5. 已知非学术域名（公司官网、产品页、教程平台等）→ 相关链接
+    non_academic_domains = [
+        "nvidia.com",
+        "amd.com",
+        "intel.com",
+        "digitalocean.com",
+        "aws.amazon.com",
+        "azure.microsoft.com",
+        "cloud.google.com",
+        "huggingface.co",
+        "pytorch.org",
+        "tensorflow.org",
+        "openai.com",
+        "anthropic.com",
+        "towardsdatascience.com",
+        "developer.nvidia.com",
+        "developer.android.com",
+        "developer.apple.com",
+    ]
+    if host:
+        for domain in non_academic_domains:
+            if host == domain or host.endswith("." + domain):
+                return True
+
+    # 6. 纯 url 开头的或者没有任何其他特征仅包含链接的条目
     text_without_prefix = re.sub(r"^\d+[\.\)\]]?\s*", "", ref).strip()
     if bool(re.match(r"^https?://", text_without_prefix)):
         return True
 
     return False
+
+
+def _is_url_entry_vlm(ref: str) -> bool:
+    """使用 VLM 判断参考文献条目是否应归类为相关链接（非正式出版学术论文）。
+
+    返回 True  → 应放入"相关链接"（非正式来源，如公司官网、教程、产品页等）；
+    返回 False → 是正式出版学术论文，应放入"参考文献"。
+
+    当规则判断存在歧义时可调用此函数辅助决策；VLM 调用失败时自动回退到 _is_url_entry。
+    """
+    _PROMPT = """\
+你是一位学术文献分类专家。请判断以下参考文献条目是否为"正式出版的学术论文"。
+
+【正式学术论文的标志】
+- 发表于学术期刊或学术会议（NeurIPS、ICML、ACL、ICLR、IEEE、Springer、Nature、Science 等）
+- 发布在预印本平台（arXiv、bioRxiv、SSRN 等）
+- 具有卷号、期号、页码或 DOI
+
+【非正式来源（应归为相关链接）的典型特征】
+- 公司官网、产品页或技术文档（如 NVIDIA、Intel、DigitalOcean、AWS、微软等）
+- 博客/教程平台（Medium、DigitalOcean Community、CSDN、知乎、掘金等）
+- 框架/工具官方文档（PyTorch、TensorFlow、Hugging Face 文档等）
+- ResearchGate 上的图片/图表下载页（URL 含 /figure/）
+- 新闻稿、白皮书、非期刊技术报告
+
+请只回答以下之一，不要输出任何其他内容：
+YES  （这是正式学术论文）
+NO   （这不是正式学术论文，应归为相关链接）
+"""
+    try:
+        result = chat_vlm(prompt=_PROMPT, text_content=ref.strip())
+        result = (result or "").strip().upper()
+        if result.startswith("YES"):
+            return False  # 正式论文 → 不是 URL 条目
+        if result.startswith("NO"):
+            return True  # 非正式来源 → 是 URL 条目
+        logger.warning(
+            f"_is_url_entry_vlm: VLM 返回值无法解析 ({result!r})，回退到规则判断"
+        )
+    except Exception as e:
+        logger.warning(f"_is_url_entry_vlm: VLM 调用失败，回退到规则判断: {e}")
+    return _is_url_entry(ref)
 
 
 def format_citation_markdown(references: List[str], links: List[Dict[str, str]]) -> str:
@@ -717,7 +800,7 @@ def _parse_citation_markdown(text: str) -> tuple[List[str], List[Dict[str, str]]
         elif section == "links":
             url_match = re.search(r"(https?://[^\s)>\]]+)", cleaned)
             if url_match:
-                if not _is_url_entry(cleaned):
+                if not _is_url_entry_vlm(cleaned):
                     refs.append(cleaned)
                 else:
                     url = url_match.group(1).rstrip(".,;")
