@@ -74,7 +74,7 @@ def content_reviser(content: str, prompt: str = prompt):
     return suggestions, revised_content
 
 
-def paragraph_merger(chapter_content: str, max_length: int = 8000):
+def paragraph_merger(chapter_content: str, max_length: int = 16000):
     """
     将章节内容按照最大字符数限制进行分段，尊重段落边界
     Args:
