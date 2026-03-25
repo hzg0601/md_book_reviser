@@ -11,7 +11,7 @@
 
 import os
 import sys
-
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.utils import chat_vlm, logger, chapter_reader, get_md_path
 
@@ -177,17 +177,17 @@ def batch_content_reviser(chapter_path: str):
 
     ## 调用VLM服务进行两阶段修订
     revised_content = ""
-    issues_log = ""
+    issues_log = {}
     for idx, paragraph in enumerate(merged_paragraphs):
         logger.info(f"正在修订第 {idx+1}/{len(merged_paragraphs)} 段内容")
         issues, revised_paragraph = content_reviser(paragraph)
-        issues_log += f"=== 第 {idx+1} 段 ===\n{issues}\n\n"
+        issues_log[paragraph] = issues
         revised_content += revised_paragraph + "\n\n"
 
-    # 将识别到的问题写入 chapter_path 下的 issues.md 文件
-    issues_path = os.path.join(os.path.dirname(md_path), "issues.md")
+    # 将识别到的问题写入 chapter_path 下的 issues.json文件
+    issues_path = os.path.join(os.path.dirname(md_path), "issues.json")
     with open(issues_path, "w", encoding="utf-8") as f:
-        f.write(issues_log)
+        json.dump(issues_log, f, ensure_ascii=False, indent=4)
     # 将修订后的内容写入 chapter_path 下的 revised.markdown 文件
     revised_md_path = os.path.join(os.path.dirname(md_path), "revised.markdown")
     with open(revised_md_path, "w", encoding="utf-8") as f:

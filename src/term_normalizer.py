@@ -104,15 +104,25 @@ def term_extractor(chapter_path: str) -> list:
 
     for idx, chunk in enumerate(chunks):
         logger.info(f"  处理第 {idx + 1}/{len(chunks)} 块")
-        response = chat_vlm(text_content=chunk, prompt=EXTRACT_PROMPT)
-        if not response:
-            logger.warning(f"  第 {idx + 1} 块 VLM 返回为空，跳过")
-            continue
-        try:
-            terms = _parse_json_list(response)
-            all_terms.extend(terms)
-        except Exception as e:
-            logger.warning(f"  解析术语列表失败: {e}，原始返回: {response[:200]}")
+        max_retries = 5
+        for attempt in range(1, max_retries + 1):
+            response = chat_vlm(text_content=chunk, prompt=EXTRACT_PROMPT)
+            if not response:
+                logger.warning(
+                    f"  第 {idx + 1} 块 VLM 返回为空（第 {attempt}/{max_retries} 次）"
+                )
+                continue
+            try:
+                terms = _parse_json_list(response)
+                all_terms.extend(terms)
+                break
+            except Exception as e:
+                logger.warning(
+                    f"  第 {idx + 1} 块解析术语列表失败（第 {attempt}/{max_retries} 次）: {e}，"
+                    f"原始返回: {response[:200]}"
+                )
+        else:
+            logger.error(f"  第 {idx + 1} 块已重试 {max_retries} 次仍失败，跳过")
 
     # 去重（保序，大小写不敏感）
     seen = set()
@@ -332,13 +342,13 @@ def batch_term_normalizer(book_path: str = None):
         logger.error(f"书籍路径不存在: {book_path}")
         return
 
-    chapter_dirs = sorted(
-        [
-            os.path.join(book_path, d)
-            for d in os.listdir(book_path)
-            if os.path.isdir(os.path.join(book_path, d))
-        ]
-    )
+    chapter_dirs = [
+        os.path.join(book_path, d)
+        for d in os.listdir(book_path)
+        if os.path.isdir(os.path.join(book_path, d))
+        and d != ".git"
+        and d != "__pycache__"
+    ]
 
     if not chapter_dirs:
         logger.warning(f"未找到任何章节目录: {book_path}")

@@ -13,6 +13,7 @@ from src.numbering import number_ite
 from src.citation_checker import citation_check_pipeline
 from src.renumbering_citation import chapter_renumber_pipeline
 from src.content_reviser import batch_content_reviser
+from src.term_normalizer import batch_term_normalizer
 md_book_path = MD_BOOK_PATH
 
 
@@ -35,10 +36,12 @@ def batch_chapter_process(md_book_path):
             # bibliography_search_pipeline(chapter_path)
             # chapter_renumber_pipeline(chapter_path)
             # citation_check_pipeline(chapter_path)
-            batch_content_reviser(chapter_path)
+            
+            # batch_content_reviser(chapter_path)
             # number_ite(chapter_path)
             # black2normal(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
+    batch_term_normalizer(md_book_path)
     logger.info(f"处理文件夹 {md_book_path} 完成")
 
 if __name__ == "__main__":
