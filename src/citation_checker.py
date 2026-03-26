@@ -1,4 +1,4 @@
-﻿"""
+"""
 调用chat_vlm，检查每个chapter_path下的citation.markdown文件中的参考文献小节中的各个参考文献（仅论文）是否符合MLA格式，
 如不符合调用bocha搜索引擎进行查找，并将其组织为MLA格式，
 最后将全部修改后的参考文献回写到citation.markdown文件的参考文献小节
@@ -23,7 +23,8 @@ MLA_CHECK_PROMPT = """\
 你是一位专业的学术文献格式审校专家。请逐条检查以下提供的文献条目。
 
 判断逻辑：
-1. 首先判断该条目是否属于学术文献（即：期刊、会议、arXiv等预印本论文，或书籍）。如果不是（例如普通的网页链接、博客、代码仓库等），将其判定为“相关链接”。
+1. 首先判断该条目是否属于学术文献（即：期刊、会议、arXiv等预印本论文，或书籍）。
+    如果不是（例如普通的网页链接、博客、代码仓库等），将其判定为“相关链接”。
 2. 如果是学术文献，则判断其是否符合以下MLA（Modern Language Association）格式规范。
 
 MLA格式核心要求（仅针对学术文献）：
@@ -32,6 +33,12 @@ MLA格式核心要求（仅针对学术文献）：
 3. **arXiv论文**：作者姓, 名. "论文标题." *arXiv preprint*, arXiv:编号, 年份.
 4. **书籍**：作者姓, 名. *书名*. 出版社, 年份.
 5. 三位及以上作者使用 "et al."
+
+注意：
+1. 对于学术文献，如果含“Team”等字样，以及“Nvidia、Microsoft、Qwen、Deepseek、LLM360”等组织名，都不是作者名，
+    需要检索作者信息。
+2. 对于学术文献，如果作者位置含有 "et al."，但实际作者数少于3个，也需要检索完整作者信息。
+
 
 常见问题包括：
 - 缺少作者信息
@@ -74,6 +81,7 @@ MLA格式规范（学术文献）：
 - 仅输出修正后的单条MLA格式参考文献文本，不要包含序号、不要包含解释
 - 信息必须准确，不要编造不存在的作者或标题
 - 如果搜索结果信息不足以完善格式，基于已有信息尽量还原
+- 如果包含https链接，删除该链接
 """
 
 
@@ -144,9 +152,41 @@ def extract_ref_section(content: str):
 
 # ─────────────────────── 步骤1：调用 VLM 检查 MLA 格式 ───────────────────────
 
+_MAX_RETRIES = 5
+
+
+def _repair_json(text: str) -> str:
+    """尝试对常见 JSON 格式错误进行后处理修复。
+
+    修复场景：
+    1. 字符串值内部含未转义的双引号（最常见的 'Expecting ,' 错误根因）
+    2. 对象/数组末尾多余的逗号（trailing comma）
+    3. JSON 被截断，末尾缺少 ']' 或 '}'
+    """
+    # 1. 移除末尾多余逗号（trailing comma before } or ]）
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    # 2. 如果数组/对象未闭合，尝试补全
+    #    统计未配对的括号
+    open_braces = text.count("{") - text.count("}")
+    open_brackets = text.count("[") - text.count("]")
+    if open_braces > 0 or open_brackets > 0:
+        # 先删掉末尾不完整的对象（最后一个完整逗号之后的残缺内容）
+        # 找到最后一个完整对象的结束位置（即最后一个 '}'）
+        last_complete = text.rfind("}")
+        if last_complete != -1:
+            text = text[: last_complete + 1]
+            # 重新计算并补齐
+            open_brackets = text.count("[") - text.count("]")
+            text += "]" * max(0, open_brackets)
+        else:
+            text += "}" * max(0, open_braces) + "]" * max(0, open_brackets)
+
+    return text
+
 
 def check_mla_format(ref_entries: list[str]) -> list[dict]:
-    """调用 chat_vlm 检查论文条目是否符合 MLA 格式。
+    """调用 chat_vlm 检查论文条目是否符合 MLA 格式，失败时自动重试，最多 5 次。
 
     Returns:
         list[dict]，每个元素包含 index, original, is_mla, issues, search_query
@@ -156,23 +196,43 @@ def check_mla_format(ref_entries: list[str]) -> list[dict]:
 
     numbered_text = "\n".join(f"{i+1}. {entry}" for i, entry in enumerate(ref_entries))
 
-    result = chat_vlm(prompt=MLA_CHECK_PROMPT, text_content=numbered_text)
-    if not result:
-        logger.error("VLM 检查 MLA 格式返回为空")
-        return []
+    for attempt in range(1, _MAX_RETRIES + 1):
+        result = chat_vlm(prompt=MLA_CHECK_PROMPT, text_content=numbered_text)
+        if not result:
+            logger.warning(f"VLM 检查 MLA 格式返回为空（第 {attempt}/{_MAX_RETRIES} 次）")
+            continue
 
-    json_match = re.search(r"\[.*\]", result, re.DOTALL)
-    if not json_match:
-        logger.error("VLM 返回内容中未找到 JSON 数组")
-        return []
+        json_match = re.search(r"\[.*\]", result, re.DOTALL)
+        if not json_match:
+            logger.warning(
+                f"VLM 返回内容中未找到 JSON 数组（第 {attempt}/{_MAX_RETRIES} 次）"
+            )
+            continue
 
-    try:
-        checks = json.loads(json_match.group())
-    except json.JSONDecodeError as e:
-        logger.error(f"解析 VLM 返回的 JSON 失败: {e}")
-        return []
+        raw_json = json_match.group()
 
-    return checks
+        # 首先尝试直接解析
+        try:
+            checks = json.loads(raw_json)
+            if attempt > 1:
+                logger.info(f"第 {attempt} 次调用成功解析 JSON")
+            return checks
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"解析 VLM 返回的 JSON 失败（第 {attempt}/{_MAX_RETRIES} 次）: {e}"
+            )
+
+        # 尝试后处理修复后再解析
+        repaired = _repair_json(raw_json)
+        try:
+            checks = json.loads(repaired)
+            logger.info(f"后处理修复 JSON 成功（第 {attempt}/{_MAX_RETRIES} 次）")
+            return checks
+        except json.JSONDecodeError as e2:
+            logger.warning(f"后处理修复后仍无法解析 JSON: {e2}，将重新调用 VLM")
+
+    logger.error(f"已重试 {_MAX_RETRIES} 次，仍无法获得有效 JSON，放弃")
+    return []
 
 
 # ─────────────────────── 步骤2：搜索并修正不合规条目 ───────────────────────
@@ -340,11 +400,34 @@ def citation_check_pipeline(chapter_path: str) -> bool:
         return False
     logger.info(f"提取到 {len(all_entries)} 条参考文献")
 
-    # 3. 调用 VLM 检查分类条目以及 MLA 格式
-    logger.info("正在调用 VLM 检查及分类条目...")
-    checks = check_mla_format(all_entries)
+    # 3. 分批（每批最多 30 条）调用 VLM 检查分类条目以及 MLA 格式
+    _BATCH_SIZE = 30
+    total = len(all_entries)
+    batch_count = (total + _BATCH_SIZE - 1) // _BATCH_SIZE
+    logger.info(
+        f"正在调用 VLM 检查及分类条目（共 {total} 条，分 {batch_count} 批，每批最多 {_BATCH_SIZE} 条）..."
+    )
+
+    checks: list[dict] = []
+    for batch_idx in range(batch_count):
+        start = batch_idx * _BATCH_SIZE
+        end = min(start + _BATCH_SIZE, total)
+        batch_entries = all_entries[start:end]
+
+        logger.info(f"  第 {batch_idx + 1}/{batch_count} 批：条目 {start + 1}–{end}")
+        batch_checks = check_mla_format(batch_entries)
+
+        if not batch_checks:
+            logger.warning(f"  第 {batch_idx + 1} 批 VLM 检查未返回有效结果，跳过该批")
+            continue
+
+        # 将批次内的 index（1-based，相对于本批）偏移为全局 index
+        for item in batch_checks:
+            item["index"] = item.get("index", 1) + start
+        checks.extend(batch_checks)
+
     if not checks:
-        logger.warning("VLM 检查未返回有效结果，跳过修正")
+        logger.warning("VLM 检查未返回任何有效结果，跳过修正")
         return False
 
     # 4. 根据分类结果分离文献和相关链接，找出不符合规范的条目
@@ -466,13 +549,8 @@ if __name__ == "__main__":
     if not os.path.isdir(target):
         logger.error(f"目录不存在: {target}")
         sys.exit(1)
-
-    citation_file = os.path.join(target, "citation.markdown")
-    if os.path.exists(citation_file):
-        ok = citation_check_pipeline(target)
-        if ok:
-            logger.info("✅ 检查修正完成")
-        else:
-            logger.warning("⚠️ 处理未完成，请查看日志")
-    else:
-        batch_citation_check(target)
+    for chapter_name in os.listdir(target):
+        if "第三" in chapter_name or "第四" in chapter_name:
+            chapter_path = os.path.join(target, chapter_name)
+            if os.path.isdir(chapter_path):
+                citation_check_pipeline(chapter_path)

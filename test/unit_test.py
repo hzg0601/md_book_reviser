@@ -35,13 +35,13 @@ def batch_chapter_process(md_book_path):
             # remove_blank_in_equation(chapter_path)
             # bibliography_search_pipeline(chapter_path)
             # chapter_renumber_pipeline(chapter_path)
-            # citation_check_pipeline(chapter_path)
+            citation_check_pipeline(chapter_path)
             
             # batch_content_reviser(chapter_path)
             # number_ite(chapter_path)
             # black2normal(chapter_path)
             logger.info(f"处理文件夹 {chapter_path} 完成")
-    batch_term_normalizer(md_book_path)
+    # batch_term_normalizer(md_book_path)
     logger.info(f"处理文件夹 {md_book_path} 完成")
 
 if __name__ == "__main__":
