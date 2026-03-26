@@ -1,4 +1,4 @@
-﻿"""
+"""
 使用大模型和检索引擎进行参考文献检索；
 1. 调用utils.py的函数获取本地md文件路径和文件内容；
 2. 按照最大16K文本对段落进行合并；
@@ -34,8 +34,12 @@ from src.utils import BOCHA_API_KEY, BOCHA_SEARCH_URL, MAX_CHARS_PER_CHUNK
 
 
 # ─────────────────────── 博查搜索 ───────────────────────
-def bocha_search(query: str, count: int = 10) -> list[dict]:
-    """调用博查搜索API，返回搜索结果列表。"""
+def bocha_search(query: str, count: int = 10, max_retries: int = 5) -> list[dict]:
+    """调用博查搜索API，返回搜索结果列表。
+
+    遇到网络瞬时错误（连接重置、超时等）时自动重试，最多重试 max_retries 次，
+    每次等待时间按指数退避（1s、2s、4s、8s、16s）增长。
+    """
     headers = {
         "Authorization": f"Bearer {BOCHA_API_KEY}",
         "Content-Type": "application/json",
@@ -46,23 +50,40 @@ def bocha_search(query: str, count: int = 10) -> list[dict]:
         "summary": True,
         "count": count,
     }
-    resp = requests.post(BOCHA_SEARCH_URL, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
 
-    results = []
-    web_pages = data.get("data", {}).get("webPages", {}).get("value", [])
-    for item in web_pages:
-        results.append(
-            {
-                "title": item.get("name", ""),
-                "url": item.get("url", ""),
-                "snippet": item.get("snippet", ""),
-                "siteName": item.get("siteName", ""),
-                "datePublished": item.get("dateLastCrawled", ""),
-            }
-        )
-    return results
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(BOCHA_SEARCH_URL, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            results = []
+            web_pages = data.get("data", {}).get("webPages", {}).get("value", [])
+            for item in web_pages:
+                results.append(
+                    {
+                        "title": item.get("name", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                        "siteName": item.get("siteName", ""),
+                        "datePublished": item.get("dateLastCrawled", ""),
+                    }
+                )
+            return results
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            wait = 2 ** attempt  # 1, 2, 4, 8, 16 秒
+            logger.warning(
+                f"  博查搜索网络错误（第 {attempt + 1}/{max_retries} 次），"
+                f"{wait}s 后重试: {e}"
+            )
+            time.sleep(wait)
+        except Exception:
+            # 非网络瞬时错误（如 HTTP 4xx/5xx、JSON 解析失败等）直接抛出，不重试
+            raise
+
+    raise last_exc
 
 
 # ─────────────────────── 第一步：提取引用线索 ───────────────────────
