@@ -35,7 +35,8 @@ def batch_chapter_process(md_book_path):
             # remove_blank_in_equation(chapter_path)
             # bibliography_search_pipeline(chapter_path)
             # chapter_renumber_pipeline(chapter_path)
-            citation_check_pipeline(chapter_path)
+            chapter_renumber_pipeline(chapter_path)
+            # citation_check_pipeline(chapter_path)
             
             # batch_content_reviser(chapter_path)
             # number_ite(chapter_path)
