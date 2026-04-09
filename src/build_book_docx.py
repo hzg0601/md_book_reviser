@@ -24,7 +24,7 @@ from docx.shared import Cm, Emu, Pt, RGBColor
 
 DEFAULT_TEMPLATE = Path(__file__).with_name("pandoc_docx_defaults.yaml")
 DEFAULT_REFERENCE_DOC = Path(__file__).with_name("pandoc_reference.docx")
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "logs" / "pandoc_docx"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "pandoc_docx"
 
 SECTION_ORDER = {
     "前言": 0,

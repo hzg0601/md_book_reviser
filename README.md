@@ -1,4 +1,4 @@
-﻿# Markdown Book Reviser
+# Markdown Book Reviser
 
 一个面向技术书籍 Markdown 生产流程的自动化工具集。
 
@@ -166,6 +166,48 @@ python src/build_book_docx.py <input_root> --output-dir <output_dir> --output-na
 ### 章节目录
 
 默认按书籍根目录下的各章节子目录遍历，每个章节通常包含至少一个 Markdown 文件。
+
+### 最小可跑样例目录结构
+
+如果你只想先验证单章流程，可以先准备如下目录：
+
+```text
+book-demo/
+├─ 第一章/
+│  ├─ chapter.md
+│  ├─ citation.markdown
+│  └─ images/
+│     ├─ fig1.png
+│     └─ fig2.png
+```
+
+推荐约定：
+
+1. `chapter.md` 作为该章正文主文件
+2. `citation.markdown` 作为该章参考文献文件，可先为空或放少量样例条目
+3. `images/` 存放该章引用的图片资源，正文使用相对路径引用
+
+一个最小正文示例：
+
+```markdown
+# 第一章 测试章节
+
+这里是一段正文内容，并引用图 1-1。
+
+![测试图片](images/fig1.png)
+
+## 1.1 小节标题
+
+这里可以继续写公式、表格或参考文献引用。
+```
+
+将 [src/config.yaml](src/config.yaml) 中的 `MD_BOOK_PATH` 指向 `book-demo` 后，即可先运行：
+
+```bash
+python src/build_book_docx.py
+```
+
+如果只验证引用或术语模块，也可以直接对这个单章目录执行对应脚本。
 
 ### 典型输出
 
