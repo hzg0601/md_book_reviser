@@ -1,0 +1,7 @@
+﻿from: markdown+yaml_metadata_block+tex_math_dollars
+to: docx
+standalone: true
+wrap: none
+columns: 999
+number-sections: false
+table-of-contents: false

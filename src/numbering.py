@@ -279,3 +279,6 @@ def number_ite(chapter_path):
     # 4. 将编号后的markdown文本写回文件；
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
+
+if __name__ == "__main__":
+    number_ite(r"C:\Users\hzg06\OneDrive\notion\Full Stack Algorithm of Large Language Models\第三章 LLM的训练流程")
