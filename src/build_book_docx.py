@@ -911,8 +911,19 @@ def contains_drawing(paragraph) -> bool:
     return False
 
 
-def _make_page_number_footer(section, start_page: int | None = None) -> None:
-    """Add a centered PAGE number field to the section's default footer."""
+def _make_page_number_footer(
+    section,
+    start_page: int | None = None,
+    fmt: str = "decimal",
+) -> None:
+    """Add a centered PAGE number field to the section's default footer.
+
+    Args:
+        section: python-docx Section object.
+        start_page: If given, reset the page counter to this value.
+        fmt: OOXML page-number format string, e.g. "decimal" (1,2,3…) or
+             "upperRoman" (I,II,III…).
+    """
     footer = section.footer
     for para in footer.paragraphs:
         para.clear()
@@ -952,24 +963,30 @@ def _make_page_number_footer(section, start_page: int | None = None) -> None:
 
     sect_pr = section._sectPr
     pg_num_type = sect_pr.find(qn("w:pgNumType"))
-    if start_page is not None:
+    if start_page is not None or fmt != "decimal":
         if pg_num_type is None:
             pg_num_type = OxmlElement("w:pgNumType")
             sect_pr.append(pg_num_type)
-        pg_num_type.set(qn("w:start"), str(start_page))
+        if start_page is not None:
+            pg_num_type.set(qn("w:start"), str(start_page))
+        else:
+            pg_num_type.attrib.pop(qn("w:start"), None)
+        pg_num_type.set(qn("w:fmt"), fmt)
     else:
         if pg_num_type is not None:
             pg_num_type.attrib.pop(qn("w:start"), None)
+            pg_num_type.attrib.pop(qn("w:fmt"), None)
             if not pg_num_type.attrib:
                 sect_pr.remove(pg_num_type)
 
 
 def add_page_numbers_from_chapter(document: Document) -> None:
     """
-    Add centered bottom page numbers starting from 1 on the first main chapter
-    section (第X章). Sections before the first chapter (前言, 自序, etc.) are
-    left without page numbers. Subsequent chapter sections continue numbering
-    from the previous section.
+    Add centered bottom page numbers to all sections:
+    - Sections before the first main chapter (前言, 自序, etc.) use lowercase
+      Roman numerals (i, ii, iii…) starting from i.
+    - The first main chapter section (第X章) resets to Arabic numeral 1.
+    - Subsequent chapter sections continue the Arabic numbering.
     """
     body = document._element.body
     section_has_main_chapter: list[bool] = []
@@ -1002,15 +1019,20 @@ def add_page_numbers_from_chapter(document: Document) -> None:
         (i for i, has_chapter in enumerate(section_has_main_chapter) if has_chapter),
         None,
     )
-    if first_chapter_idx is None:
-        return
-
     for idx, section in enumerate(document.sections):
-        if idx < first_chapter_idx:
-            continue
-        _make_page_number_footer(
-            section, start_page=(1 if idx == first_chapter_idx else None)
-        )
+        if first_chapter_idx is None or idx < first_chapter_idx:
+            # Preface / front-matter sections: Roman numerals from i.
+            _make_page_number_footer(
+                section,
+                start_page=(1 if idx == 0 else None),
+                fmt="upperRoman",
+            )
+        elif idx == first_chapter_idx:
+            # First body chapter: reset to Arabic 1.
+            _make_page_number_footer(section, start_page=1, fmt="decimal")
+        else:
+            # Subsequent chapters: continue Arabic numbering.
+            _make_page_number_footer(section, fmt="decimal")
 
 
 def postprocess_docx(
