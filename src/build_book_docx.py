@@ -911,6 +911,108 @@ def contains_drawing(paragraph) -> bool:
     return False
 
 
+def _make_page_number_footer(section, start_page: int | None = None) -> None:
+    """Add a centered PAGE number field to the section's default footer."""
+    footer = section.footer
+    for para in footer.paragraphs:
+        para.clear()
+
+    paragraphs = footer.paragraphs
+    if paragraphs:
+        para = paragraphs[0]
+    else:
+        para = footer.add_paragraph()
+
+    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    para.paragraph_format.first_line_indent = Pt(0)
+    para.paragraph_format.space_before = Pt(0)
+    para.paragraph_format.space_after = Pt(0)
+
+    run_begin = para.add_run()
+    set_run_fonts(run_begin)
+    run_begin.font.size = Pt(11)
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    run_begin._r.append(fld_begin)
+
+    run_instr = para.add_run()
+    set_run_fonts(run_instr)
+    run_instr.font.size = Pt(11)
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = " PAGE "
+    run_instr._r.append(instr)
+
+    run_end = para.add_run()
+    set_run_fonts(run_end)
+    run_end.font.size = Pt(11)
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    run_end._r.append(fld_end)
+
+    sect_pr = section._sectPr
+    pg_num_type = sect_pr.find(qn("w:pgNumType"))
+    if start_page is not None:
+        if pg_num_type is None:
+            pg_num_type = OxmlElement("w:pgNumType")
+            sect_pr.append(pg_num_type)
+        pg_num_type.set(qn("w:start"), str(start_page))
+    else:
+        if pg_num_type is not None:
+            pg_num_type.attrib.pop(qn("w:start"), None)
+            if not pg_num_type.attrib:
+                sect_pr.remove(pg_num_type)
+
+
+def add_page_numbers_from_chapter(document: Document) -> None:
+    """
+    Add centered bottom page numbers starting from 1 on the first main chapter
+    section (第X章). Sections before the first chapter (前言, 自序, etc.) are
+    left without page numbers. Subsequent chapter sections continue numbering
+    from the previous section.
+    """
+    body = document._element.body
+    section_has_main_chapter: list[bool] = []
+    current_has_main_chapter = False
+
+    for element in body:
+        if element.tag == qn("w:p"):
+            pPr = element.find(qn("w:pPr"))
+            if pPr is not None:
+                pStyle = pPr.find(qn("w:pStyle"))
+                if pStyle is not None:
+                    style_val = pStyle.get(qn("w:val"), "")
+                    if style_val in ("Heading1", "Title"):
+                        text = "".join(t.text or "" for t in element.iter(qn("w:t")))
+                        if re.search(
+                            r"第\s*[0-9一二三四五六七八九十]+\s*章", text.strip()
+                        ):
+                            current_has_main_chapter = True
+                sectPr_in_p = pPr.find(qn("w:sectPr")) if pPr is not None else None
+                if sectPr_in_p is not None:
+                    section_has_main_chapter.append(current_has_main_chapter)
+                    current_has_main_chapter = False
+        elif element.tag == qn("w:sectPr"):
+            section_has_main_chapter.append(current_has_main_chapter)
+
+    if not section_has_main_chapter:
+        section_has_main_chapter = [current_has_main_chapter]
+
+    first_chapter_idx = next(
+        (i for i, has_chapter in enumerate(section_has_main_chapter) if has_chapter),
+        None,
+    )
+    if first_chapter_idx is None:
+        return
+
+    for idx, section in enumerate(document.sections):
+        if idx < first_chapter_idx:
+            continue
+        _make_page_number_footer(
+            section, start_page=(1 if idx == first_chapter_idx else None)
+        )
+
+
 def postprocess_docx(
     docx_path: Path,
     image_options: ImageSizingOptions,
@@ -995,6 +1097,7 @@ def postprocess_docx(
                         set_run_fonts(run)
                         run.font.italic = False
 
+    add_page_numbers_from_chapter(document)
     document.save(docx_path)
 
 
@@ -1060,8 +1163,8 @@ def merge_docx_files(
     for chapter_key, docx_file in docx_files[1:]:
         if chapter_key != current_chapter_key:
             current_chapter_key = chapter_key
-            # Insert a section break at chapter boundary so next chapter starts on odd page.
-            master_document.add_section(WD_SECTION_START.ODD_PAGE)
+            # Insert a section break at chapter boundary so next chapter starts on a new page.
+            master_document.add_section(WD_SECTION_START.NEW_PAGE)
         composer.append(Document(docx_file))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
