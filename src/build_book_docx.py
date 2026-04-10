@@ -554,24 +554,50 @@ def set_table_borders_without_outer_sides(table) -> None:
         table_properties.remove(existing_borders)
 
     borders = OxmlElement("w:tblBorders")
+    # Word border size uses eighths of a point: 1.5pt=12, 1pt=8, 0.5pt=4.
+    default_inner_line_width = 4
+    thick_line_width = 12
 
-    def append_border(edge: str, value: str) -> None:
+    def append_border(edge: str, value: str, size: int | None = None) -> None:
         border = OxmlElement(f"w:{edge}")
         border.set(qn("w:val"), value)
         if value != "nil":
-            border.set(qn("w:sz"), "8")
+            border.set(
+                qn("w:sz"), str(size if size is not None else default_inner_line_width)
+            )
             border.set(qn("w:space"), "0")
             border.set(qn("w:color"), "000000")
         borders.append(border)
 
-    append_border("top", "single")
+    append_border("top", "single", thick_line_width)
     append_border("left", "nil")
-    append_border("bottom", "single")
+    append_border("bottom", "single", thick_line_width)
     append_border("right", "nil")
-    append_border("insideH", "single")
-    append_border("insideV", "single")
+    append_border("insideH", "single", default_inner_line_width)
+    append_border("insideV", "single", default_inner_line_width)
 
     table_properties.append(borders)
+
+
+def set_table_first_inner_horizontal_border(table) -> None:
+    if len(table.rows) < 2:
+        return
+
+    first_inner_horizontal_width = 8
+    for cell in table.rows[0].cells:
+        cell_properties = cell._tc.get_or_add_tcPr()
+        existing_borders = cell_properties.find(qn("w:tcBorders"))
+        if existing_borders is not None:
+            cell_properties.remove(existing_borders)
+
+        borders = OxmlElement("w:tcBorders")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), str(first_inner_horizontal_width))
+        bottom.set(qn("w:space"), "0")
+        bottom.set(qn("w:color"), "000000")
+        borders.append(bottom)
+        cell_properties.append(borders)
 
 
 def mark_equation_layout_table(table) -> None:
@@ -952,6 +978,7 @@ def postprocess_docx(
 
         adjust_table_layout(table, base_section, table_options)
         set_table_borders_without_outer_sides(table)
+        set_table_first_inner_horizontal_border(table)
         for row_index, row in enumerate(table.rows):
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
