@@ -547,6 +547,33 @@ def set_table_no_borders(table) -> None:
     table_properties.append(borders)
 
 
+def set_table_borders_without_outer_sides(table) -> None:
+    table_properties = table._element.tblPr
+    existing_borders = table_properties.find(qn("w:tblBorders"))
+    if existing_borders is not None:
+        table_properties.remove(existing_borders)
+
+    borders = OxmlElement("w:tblBorders")
+
+    def append_border(edge: str, value: str) -> None:
+        border = OxmlElement(f"w:{edge}")
+        border.set(qn("w:val"), value)
+        if value != "nil":
+            border.set(qn("w:sz"), "8")
+            border.set(qn("w:space"), "0")
+            border.set(qn("w:color"), "000000")
+        borders.append(border)
+
+    append_border("top", "single")
+    append_border("left", "nil")
+    append_border("bottom", "single")
+    append_border("right", "nil")
+    append_border("insideH", "single")
+    append_border("insideV", "single")
+
+    table_properties.append(borders)
+
+
 def mark_equation_layout_table(table) -> None:
     table_properties = table._element.tblPr
     existing_caption = table_properties.find(qn("w:tblCaption"))
@@ -924,6 +951,7 @@ def postprocess_docx(
             continue
 
         adjust_table_layout(table, base_section, table_options)
+        set_table_borders_without_outer_sides(table)
         for row_index, row in enumerate(table.rows):
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
