@@ -1,5 +1,7 @@
 # Markdown Book Reviser
 
+[English Version](README.en.md)
+
 一个面向技术书籍 Markdown 生产流程的自动化工具集。
 
 核心目标是把“章节内容修订、术语统一、文献检索与引用整理、图片和表格命名、编号规范化、最终 Word 构建”串成可重复执行的流水线。

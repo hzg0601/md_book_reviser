@@ -1060,6 +1060,8 @@ def merge_docx_files(
     for chapter_key, docx_file in docx_files[1:]:
         if chapter_key != current_chapter_key:
             current_chapter_key = chapter_key
+            # Insert a section break at chapter boundary so next chapter starts on odd page.
+            master_document.add_section(WD_SECTION_START.ODD_PAGE)
         composer.append(Document(docx_file))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
