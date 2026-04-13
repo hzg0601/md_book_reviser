@@ -6,14 +6,21 @@ The project is designed to connect chapter revision, terminology normalization, 
 
 Core implementation lives in [src](src).
 
+The current codebase is organized into 4 function-oriented subdirectories:
+
+1. [src/content_revising](src/content_revising)
+2. [src/format_and_numbering](src/format_and_numbering)
+3. [src/bibliography_manage](src/bibliography_manage)
+4. [src/md2docx](src/md2docx)
+
 ## Features
 
 This repository provides:
 
 1. Content revision
 2. Terminology extraction and normalization
-3. Bibliography search and MLA-style formatting
-4. Consistency checks between in-text citations and reference lists
+3. Bibliography search and MLA-style normalization
+4. Consistency checks between in-text citations and end-of-chapter references
 5. Automatic numbering for figures, tables, and equations
 6. Markdown structure cleanup and image path normalization
 7. DOCX generation and post-processing with Pandoc + python-docx
@@ -32,13 +39,13 @@ Suggested processing order:
 
 Related modules:
 
-1. [src/structure_unifier.py](src/structure_unifier.py)
-2. [src/content_reviser.py](src/content_reviser.py)
-3. [src/bibliography_search_api.py](src/bibliography_search_api.py)
-4. [src/citation_rearrange.py](src/citation_rearrange.py) and [src/citation_checker.py](src/citation_checker.py)
-5. [src/numbering.py](src/numbering.py)
-6. [src/term_normalizer.py](src/term_normalizer.py)
-7. [src/build_book_docx.py](src/build_book_docx.py)
+1. [src/format_and_numbering/structure_unifier.py](src/format_and_numbering/structure_unifier.py)
+2. [src/content_revising/content_reviser.py](src/content_revising/content_reviser.py)
+3. [src/bibliography_manage/bibliography_search_api.py](src/bibliography_manage/bibliography_search_api.py)
+4. [src/bibliography_manage/citation_rearrange.py](src/bibliography_manage/citation_rearrange.py) and [src/bibliography_manage/citation_checker.py](src/bibliography_manage/citation_checker.py)
+5. [src/format_and_numbering/numbering.py](src/format_and_numbering/numbering.py)
+6. [src/format_and_numbering/term_normalizer.py](src/format_and_numbering/term_normalizer.py)
+7. [src/md2docx/build_book_docx.py](src/md2docx/build_book_docx.py)
 
 ## Module Overview
 
@@ -51,43 +58,74 @@ Related modules:
 
 ### Content and Structure Processing
 
-- [src/content_reviser.py](src/content_reviser.py)
+- [src/content_revising/content_reviser.py](src/content_revising/content_reviser.py)
   - Uses a two-stage VLM flow: detect issues first, revise second
   - Produces `issues.json` and `revised.markdown`
-- [src/structure_unifier.py](src/structure_unifier.py)
+- [src/format_and_numbering/structure_unifier.py](src/format_and_numbering/structure_unifier.py)
   - Normalizes Markdown image references
   - Removes unreferenced images
-- [src/formatter.py](src/formatter.py)
-  - Fixes formatting issues that affect Pandoc compatibility
-- [src/name_normalizer.py](src/name_normalizer.py)
+- [src/format_and_numbering/formatter.py](src/format_and_numbering/formatter.py)
+  - Fixes equation whitespace and other formatting details that affect Pandoc compatibility
+- [src/format_and_numbering/name_normalizer.py](src/format_and_numbering/name_normalizer.py)
   - Normalizes figure and table titles, optionally with VLM support
-- [src/numbering.py](src/numbering.py)
+- [src/format_and_numbering/numbering.py](src/format_and_numbering/numbering.py)
   - Renumbers figures, tables, equations, and in-text references
+- [src/format_and_numbering/term_normalizer.py](src/format_and_numbering/term_normalizer.py)
+  - Extracts and normalizes terminology across the book
+  - Produces `term_dict.json` and `normalized.markdown`
 
 ### Bibliography and Citation Processing
 
-- [src/bibliography_search_api.py](src/bibliography_search_api.py)
+- [src/bibliography_manage/bibliography_search_api.py](src/bibliography_manage/bibliography_search_api.py)
   - Extracts citation clues from chapter text
   - Calls the search service and generates reference entries
   - Merges and deduplicates results into `citation.markdown`
-- [src/bibliography_citation_api.py](src/bibliography_citation_api.py)
+- [src/bibliography_manage/bibliography_citation_api.py](src/bibliography_manage/bibliography_citation_api.py)
   - Provides multi-source academic metadata lookup and citation normalization
-- [src/citation_rearrange.py](src/citation_rearrange.py)
-  - Reorders, classifies, deduplicates, and formats `citation.markdown`
-- [src/citation_checker.py](src/citation_checker.py)
+- [src/bibliography_manage/citation_checker.py](src/bibliography_manage/citation_checker.py)
   - Checks and fixes citation/reference consistency issues
-- [src/renumbering_citation.py](src/renumbering_citation.py)
+- [src/bibliography_manage/renumbering_citation.py](src/bibliography_manage/renumbering_citation.py)
   - Deduplicates and renumbers citation markers
+- [src/bibliography_manage/citation_rearrange.py](src/bibliography_manage/citation_rearrange.py)
+  - Combines reclassification, MLA repair, deduplication, sorting, and renumbering into a full `citation.markdown` cleanup pipeline
+  - This is currently the preferred main entry for citation cleanup
 
-### Terminology and DOCX Build
+### DOCX Conversion
 
-- [src/term_normalizer.py](src/term_normalizer.py)
-  - Extracts and normalizes terminology across the book
-  - Produces `term_dict.json` and `normalized.markdown`
-- [src/build_book_docx.py](src/build_book_docx.py)
+- [src/md2docx/build_book_docx.py](src/md2docx/build_book_docx.py)
   - Converts Markdown files to DOCX and merges them
-  - Applies post-processing for fonts, images, tables, and equation layout
-  - Uses [src/pandoc_docx_defaults.yaml](src/pandoc_docx_defaults.yaml) and [src/pandoc_reference.docx](src/pandoc_reference.docx)
+  - Applies post-processing for fonts, images, tables, page numbers, equation number layout, and reference-list formatting
+  - When `input_root` is omitted, it loads `MD_BOOK_PATH` from [src/utils.py](src/utils.py)
+  - Uses [src/md2docx/pandoc_docx_defaults.yaml](src/md2docx/pandoc_docx_defaults.yaml) and [src/md2docx/pandoc_reference.docx](src/md2docx/pandoc_reference.docx) by default
+
+## Directory Structure
+
+The current core layout is:
+
+```text
+src/
+├─ utils.py
+├─ config.yaml
+├─ config.yaml.example
+├─ content_revising/
+│  └─ content_reviser.py
+├─ format_and_numbering/
+│  ├─ formatter.py
+│  ├─ name_normalizer.py
+│  ├─ numbering.py
+│  ├─ structure_unifier.py
+│  └─ term_normalizer.py
+├─ bibliography_manage/
+│  ├─ bibliography_citation_api.py
+│  ├─ bibliography_search_api.py
+│  ├─ citation_checker.py
+│  ├─ citation_rearrange.py
+│  └─ renumbering_citation.py
+└─ md2docx/
+   ├─ build_book_docx.py
+   ├─ pandoc_docx_defaults.yaml
+   └─ pandoc_reference.docx
+```
 
 ## Requirements
 
@@ -141,31 +179,46 @@ Edit [src/config.yaml](src/config.yaml):
 Check citation consistency:
 
 ```bash
-python src/citation_checker.py
+python src/bibliography_manage/citation_checker.py
 ```
 
 Rearrange `citation.markdown`:
 
 ```bash
-python src/citation_rearrange.py
+python src/bibliography_manage/citation_rearrange.py
+```
+
+Run the legacy citation deduplication and renumbering flow only:
+
+```bash
+python src/bibliography_manage/renumbering_citation.py
 ```
 
 Run terminology normalization:
 
 ```bash
-python src/term_normalizer.py
+python src/format_and_numbering/term_normalizer.py
 ```
+
+Content revision, numbering, and structure cleanup modules are currently used mainly as imported functions inside larger workflows. For standalone debugging, it is better to import them from a small script or an interactive Python session at the repository root.
 
 Build DOCX:
 
 ```bash
-python src/build_book_docx.py
+python src/md2docx/build_book_docx.py
+```
+
+Or run it from the commonly used working directory:
+
+```bash
+cd src/md2docx
+python .\build_book_docx.py
 ```
 
 Build DOCX with explicit input and output paths:
 
 ```bash
-python src/build_book_docx.py <input_root> --output-dir <output_dir> --output-name book_complete.docx
+python src/md2docx/build_book_docx.py <input_root> --output-dir <output_dir> --output-name book_complete.docx
 ```
 
 ## Input and Output Conventions
@@ -211,15 +264,18 @@ You can continue with equations, tables, or citation examples here.
 Then point `MD_BOOK_PATH` in [src/config.yaml](src/config.yaml) to `book-demo` and run:
 
 ```bash
-python src/build_book_docx.py
+python src/md2docx/build_book_docx.py
 ```
+
+If you only want to validate bibliography or terminology modules, you can also run the corresponding scripts directly against that single-chapter directory.
 
 ### Typical Outputs
 
 - Revision outputs: `issues.json`, `revised.markdown`
 - Bibliography outputs: `citation.markdown`
 - Terminology outputs: `term_dict.json`, `normalized.markdown`
-- Build outputs: merged DOCX files under `logs/pandoc_docx`
+- Build outputs: by default `MD_BOOK_PATH/book_complete.docx`; if `--output-dir` is specified, the merged DOCX is written there
+- Intermediate build outputs: chapter-level DOCX files under `<output_dir>/intermediate`
 - Runtime logs: `log_*.log` under `logs`
 
 ## Troubleshooting
@@ -237,7 +293,7 @@ Fix:
 
 Symptom: cleanup ends with a `PermissionError` when removing the intermediate output directory.
 
-Cause: delayed file handle release, OneDrive sync, or antivirus locking the files.
+Cause: delayed file handle release, OneDrive sync, Word preview, or antivirus locking the files.
 
 Fix:
 

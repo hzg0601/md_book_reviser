@@ -8,6 +8,13 @@
 
 主要代码位于 [src](src)。
 
+当前代码结构已经按功能拆分为 4 个子目录：
+
+1. [src/content_revising](src/content_revising)
+2. [src/format_and_numbering](src/format_and_numbering)
+3. [src/bibliography_manage](src/bibliography_manage)
+4. [src/md2docx](src/md2docx)
+
 ## 功能概览
 
 本项目覆盖以下能力：
@@ -34,13 +41,13 @@
 
 对应模块：
 
-1. [src/structure_unifier.py](src/structure_unifier.py)
-2. [src/content_reviser.py](src/content_reviser.py)
-3. [src/bibliography_search_api.py](src/bibliography_search_api.py)
-4. [src/citation_rearrange.py](src/citation_rearrange.py) 与 [src/citation_checker.py](src/citation_checker.py)
-5. [src/numbering.py](src/numbering.py)
-6. [src/term_normalizer.py](src/term_normalizer.py)
-7. [src/build_book_docx.py](src/build_book_docx.py)
+1. [src/format_and_numbering/structure_unifier.py](src/format_and_numbering/structure_unifier.py)
+2. [src/content_revising/content_reviser.py](src/content_revising/content_reviser.py)
+3. [src/bibliography_manage/bibliography_search_api.py](src/bibliography_manage/bibliography_search_api.py)
+4. [src/bibliography_manage/citation_rearrange.py](src/bibliography_manage/citation_rearrange.py) 与 [src/bibliography_manage/citation_checker.py](src/bibliography_manage/citation_checker.py)
+5. [src/format_and_numbering/numbering.py](src/format_and_numbering/numbering.py)
+6. [src/format_and_numbering/term_normalizer.py](src/format_and_numbering/term_normalizer.py)
+7. [src/md2docx/build_book_docx.py](src/md2docx/build_book_docx.py)
 
 ## 模块说明
 
@@ -53,46 +60,74 @@
 
 ### 内容与结构处理
 
-- [src/content_reviser.py](src/content_reviser.py)
+- [src/content_revising/content_reviser.py](src/content_revising/content_reviser.py)
   - 两阶段 VLM 流程：先识别问题，再定向修订
   - 输出 issues.json 与 revised.markdown
-- [src/structure_unifier.py](src/structure_unifier.py)
+- [src/format_and_numbering/structure_unifier.py](src/format_and_numbering/structure_unifier.py)
   - 统一 Markdown 图片引用路径
   - 清理未被引用的冗余图片
-- [src/formatter.py](src/formatter.py)
+- [src/format_and_numbering/formatter.py](src/format_and_numbering/formatter.py)
   - 处理公式空格、粗体等 Pandoc 兼容问题
-- [src/name_normalizer.py](src/name_normalizer.py)
+- [src/format_and_numbering/name_normalizer.py](src/format_and_numbering/name_normalizer.py)
   - 图名、表名补全与规范化（可调用 VLM）
-- [src/numbering.py](src/numbering.py)
+- [src/format_and_numbering/numbering.py](src/format_and_numbering/numbering.py)
   - 图表公式编号与上下文引用替换
-
-### 文献与引用处理
-
-- [src/bibliography_search_api.py](src/bibliography_search_api.py)
-  - 从正文提取引用线索
-  - 调用搜索服务并生成引用条目
-  - 合并去重后写入 citation.markdown
-- [src/bibliography_citation_api.py](src/bibliography_citation_api.py)
-  - 多源学术元数据检索与引用规范化能力
-- [src/citation_rearrange.py](src/citation_rearrange.py)
-  - 对 citation.markdown 做重分类、排序、去重、格式整理
-- [src/citation_checker.py](src/citation_checker.py)
-  - 检查并修正文献格式与引用一致性
-- [src/renumbering_citation.py](src/renumbering_citation.py)
-  - 引用去重与编号重排
-
-### 术语与构建
-
-- [src/term_normalizer.py](src/term_normalizer.py)
+- [src/format_and_numbering/term_normalizer.py](src/format_and_numbering/term_normalizer.py)
   - 全书术语抽取、标准化、正文替换
   - 输出 term_dict.json 与 normalized.markdown
 
+### 文献与引用处理
+
+- [src/bibliography_manage/bibliography_search_api.py](src/bibliography_manage/bibliography_search_api.py)
+  - 从正文提取引用线索
+  - 调用搜索服务并生成引用条目
+  - 合并去重后写入 citation.markdown
+- [src/bibliography_manage/bibliography_citation_api.py](src/bibliography_manage/bibliography_citation_api.py)
+  - 多源学术元数据检索与引用规范化能力
+- [src/bibliography_manage/citation_checker.py](src/bibliography_manage/citation_checker.py)
+  - 检查并修正文献格式与引用一致性
+- [src/bibliography_manage/renumbering_citation.py](src/bibliography_manage/renumbering_citation.py)
+  - 引用去重与编号重排
+- [src/bibliography_manage/citation_rearrange.py](src/bibliography_manage/citation_rearrange.py)
+  - 合并了引用重分类、MLA 修正、去重、排序与重编号的完整流水线
+  - 当前更适合作为 `citation.markdown` 的主整理入口
+
 ### docx文档转换
 
-- [src/build_book_docx.py](src/build_book_docx.py)
+- [src/md2docx/build_book_docx.py](src/md2docx/build_book_docx.py)
   - 批量转换 Markdown 为 DOCX 并合并
-  - 二次布局调整（字体、图片、表格、公式编号布局）
-  - 使用 [src/pandoc_docx_defaults.yaml](src/pandoc_docx_defaults.yaml) 与 [src/pandoc_reference.docx](src/pandoc_reference.docx)
+  - 二次布局调整（字体、图片、表格、页码、公式编号布局、参考文献与相关链接列表格式）
+  - 默认在未显式传入 `input_root` 时，从 [src/utils.py](src/utils.py) 读取 `MD_BOOK_PATH`
+  - 默认使用 [src/md2docx/pandoc_docx_defaults.yaml](src/md2docx/pandoc_docx_defaults.yaml) 与 [src/md2docx/pandoc_reference.docx](src/md2docx/pandoc_reference.docx)
+
+## 目录结构
+
+当前核心目录如下：
+
+```text
+src/
+├─ utils.py
+├─ config.yaml
+├─ config.yaml.example
+├─ content_revising/
+│  └─ content_reviser.py
+├─ format_and_numbering/
+│  ├─ formatter.py
+│  ├─ name_normalizer.py
+│  ├─ numbering.py
+│  ├─ structure_unifier.py
+│  └─ term_normalizer.py
+├─ bibliography_manage/
+│  ├─ bibliography_citation_api.py
+│  ├─ bibliography_search_api.py
+│  ├─ citation_checker.py
+│  ├─ citation_rearrange.py
+│  └─ renumbering_citation.py
+└─ md2docx/
+   ├─ build_book_docx.py
+   ├─ pandoc_docx_defaults.yaml
+   └─ pandoc_reference.docx
+```
 
 ## 环境依赖
 
@@ -145,23 +180,34 @@ pip install -r requirements.txt
 
 检查引用一致性：
 
-python src/citation_checker.py
+python src/bibliography_manage/citation_checker.py
 
 整理 citation.markdown：
 
-python src/citation_rearrange.py
+python src/bibliography_manage/citation_rearrange.py
+
+只做传统的引用去重与重编号：
+
+python src/bibliography_manage/renumbering_citation.py
 
 全书术语标准化：
 
-python src/term_normalizer.py
+python src/format_and_numbering/term_normalizer.py
+
+内容修订、图表公式处理、结构归一化等模块当前主要按函数方式被其他流程调用；如果需要单独调试，建议在仓库根目录下通过 Python 交互环境或临时脚本导入对应模块。
 
 生成 DOCX：
 
-python src/build_book_docx.py
+python src/md2docx/build_book_docx.py
+
+或者按当前常用工作目录直接执行：
+
+cd src/md2docx
+python .\build_book_docx.py
 
 指定输入与输出目录生成 DOCX：
 
-python src/build_book_docx.py <input_root> --output-dir <output_dir> --output-name book_complete.docx
+python src/md2docx/build_book_docx.py <input_root> --output-dir <output_dir> --output-name book_complete.docx
 
 ## 输入与输出约定
 
@@ -206,7 +252,7 @@ book-demo/
 将 [src/config.yaml](src/config.yaml) 中的 `MD_BOOK_PATH` 指向 `book-demo` 后，即可先运行：
 
 ```bash
-python src/build_book_docx.py
+python src/md2docx/build_book_docx.py
 ```
 
 如果只验证引用或术语模块，也可以直接对这个单章目录执行对应脚本。
@@ -216,7 +262,8 @@ python src/build_book_docx.py
 - 修订结果：issues.json、revised.markdown
 - 文献结果：citation.markdown
 - 术语结果：term_dict.json、normalized.markdown
-- 构建结果：logs/pandoc_docx 下的合并 DOCX
+- 构建结果：默认输出到 `MD_BOOK_PATH/book_complete.docx`；如果显式传入 `--output-dir`，则输出到指定目录
+- 构建中间结果：`<output_dir>/intermediate` 下的单章 DOCX
 - 运行日志：logs 目录下 log_*.log
 
 ## 常见问题
@@ -234,7 +281,7 @@ python src/build_book_docx.py
 
 症状：构建结束后删除中间目录时报 PermissionError。
 
-原因：文件句柄未及时释放，或 OneDrive、杀毒软件占用。
+原因：文件句柄未及时释放，或 OneDrive、Word 预览、杀毒软件占用。
 
 处理：
 
