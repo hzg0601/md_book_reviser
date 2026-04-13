@@ -14,7 +14,7 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils import logger, chat_vlm, MD_BOOK_PATH
-from src.bibliography_search_api import bocha_search
+from bibliography_manage.bibliography_search_api import bocha_search
 
 
 # ─────────────────────── Prompts ───────────────────────

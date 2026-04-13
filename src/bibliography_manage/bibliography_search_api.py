@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.utils import get_md_path, logger, chat_vlm, chapter_reader
-from src.content_reviser import paragraph_merger
+from content_revising.content_reviser import paragraph_merger
 from src.utils import BOCHA_API_KEY, BOCHA_SEARCH_URL, MAX_CHARS_PER_CHUNK
 
 

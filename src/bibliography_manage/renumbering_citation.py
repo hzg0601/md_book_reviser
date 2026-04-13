@@ -1,11 +1,11 @@
-﻿import os
+﻿﻿import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 from difflib import SequenceMatcher
 from src.utils import logger, chat_vlm
-from src.bibliography_search_api import _is_url_entry, _is_url_entry_vlm
+from bibliography_manage.bibliography_search_api import _is_url_entry, _is_url_entry_vlm
 
 
 def extract_title_and_author(ref_text):

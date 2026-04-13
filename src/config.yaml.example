@@ -1,0 +1,16 @@
+﻿local:
+  VLM_ENDPOINT: "http://127.0.0.1:3466"
+  VLM_MODEL_NAME: "Qwen3-VL-32B-Instruct-AWQ"
+  VLM_API_KEY: "EMPTY"
+  BOCHA_API_KEY: "sk-"
+  MD_BOOK_PATH: "C:\\Users\\Lenovo\\OneDrive\\notion\\Training and Inferrence_Algorithm Stack of LLM"
+  MAX_CHARS_PER_CHUNK: 28000
+
+remote:
+  VLM_ENDPOINT: "https://integrate.api.nvidia.com"
+  VLM_MODEL_NAME: "qwen/qwen3.5-122b-a10b"
+  VLM_API_KEY: "nvapi-"
+  BOCHA_API_KEY: "sk-"
+  MD_BOOK_PATH: "C:\\Users\\hzg06\\OneDrive\\notion\\Training and Inferrence_Algorithm Stack of LLM"
+  MAX_CHARS_PER_CHUNK: 28000
+mode: "local"

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 import json
 from src.utils import get_md_path, logger, chat_vlm
-from src.content_reviser import paragraph_merger, chapter_reader
+from content_revising.content_reviser import paragraph_merger, chapter_reader
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 

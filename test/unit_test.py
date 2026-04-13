@@ -4,16 +4,17 @@ import os
 # 将项目根目录添加到 sys.path 中，解决跨目录导入问题
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.structure_unifier import img_unifier
-from src.formatter import remove_blank_in_equation, black2normal
+from format_and_numbering.structure_unifier import img_unifier
+from format_and_numbering.formatter import remove_blank_in_equation, black2normal
 from src.utils import logger,MD_BOOK_PATH
-from src.name_normalizer import img_name_normalizer, table_name_normalizer
-from src.bibliography_search_api import bibliography_search_pipeline
-from src.numbering import number_ite
-from src.citation_checker import citation_check_pipeline
-from src.renumbering_citation import chapter_renumber_pipeline
-from src.content_reviser import batch_content_reviser
-from src.term_normalizer import batch_term_normalizer
+from format_and_numbering.name_normalizer import img_name_normalizer, table_name_normalizer
+from bibliography_manage.bibliography_search_api import bibliography_search_pipeline
+from format_and_numbering.numbering import number_ite
+from bibliography_manage.citation_checker import citation_check_pipeline
+from bibliography_manage.renumbering_citation import chapter_renumber_pipeline
+from content_revising.content_reviser import batch_content_reviser
+from format_and_numbering.term_normalizer import batch_term_normalizer
+from md2docx.build_book_docx import main as build_book_docx_main
 md_book_path = MD_BOOK_PATH
 
 
@@ -35,9 +36,7 @@ def batch_chapter_process(md_book_path):
             # remove_blank_in_equation(chapter_path)
             # bibliography_search_pipeline(chapter_path)
             # chapter_renumber_pipeline(chapter_path)
-            # chapter_renumber_pipeline(chapter_path)
-            # citation_check_pipeline(chapter_path)
-            
+            # citation_check_pipeline(chapter_path)         
             # batch_content_reviser(chapter_path)
             # number_ite(chapter_path)
             # black2normal(chapter_path)
@@ -48,3 +47,4 @@ def batch_chapter_process(md_book_path):
 if __name__ == "__main__":
 
     batch_chapter_process(md_book_path)
+    build_book_docx_main()

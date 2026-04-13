@@ -3,6 +3,7 @@
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass
+import importlib.util
 import re
 import shutil
 import subprocess
@@ -189,15 +190,29 @@ def build_table_sizing_options(args: argparse.Namespace) -> TableSizingOptions:
 
 
 def load_md_book_path_from_utils() -> Path | None:
-    workspace_root = Path(__file__).resolve().parents[1]
-    if str(workspace_root) not in sys.path:
-        sys.path.insert(0, str(workspace_root))
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
     try:
         from src.utils import MD_BOOK_PATH
     except Exception as exc:
-        print(f"[warn] Failed to load MD_BOOK_PATH from src/utils.py: {exc}")
-        return None
+        utils_path = repo_root / "src" / "utils.py"
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "md_book_reviser_utils", utils_path
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Could not create import spec for {utils_path}")
+            utils_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(utils_module)
+            MD_BOOK_PATH = getattr(utils_module, "MD_BOOK_PATH", None)
+        except Exception as fallback_exc:
+            print(
+                "[warn] Failed to load MD_BOOK_PATH from src/utils.py: "
+                f"{exc}; fallback also failed: {fallback_exc}"
+            )
+            return None
 
     if not MD_BOOK_PATH:
         return None
@@ -832,6 +847,17 @@ def apply_body_paragraph_format(paragraph) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
+def apply_reference_entry_paragraph_format(paragraph) -> None:
+    paragraph_format = paragraph.paragraph_format
+    paragraph_format.left_indent = Pt(0)
+    paragraph_format.first_line_indent = Pt(0)
+    paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    paragraph_format.line_spacing = BODY_LINE_SPACING
+    paragraph_format.space_before = Pt(0)
+    paragraph_format.space_after = Pt(0)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+
 def apply_heading_paragraph_format(paragraph) -> None:
     paragraph_format = paragraph.paragraph_format
     paragraph_format.first_line_indent = Pt(0)
@@ -909,6 +935,84 @@ def contains_drawing(paragraph) -> bool:
         if run._element.xpath(".//w:drawing"):
             return True
     return False
+
+
+def is_reference_section_heading(paragraph) -> bool:
+    return paragraph.text.strip() in {"参考文献", "相关链接"}
+
+
+def has_numbering(paragraph) -> bool:
+    paragraph_properties = paragraph._element.find(qn("w:pPr"))
+    if paragraph_properties is None:
+        return False
+    return paragraph_properties.find(qn("w:numPr")) is not None
+
+
+def strip_paragraph_numbering(paragraph) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+
+    numbering = paragraph_properties.find(qn("w:numPr"))
+    if numbering is not None:
+        paragraph_properties.remove(numbering)
+
+    tabs = paragraph_properties.find(qn("w:tabs"))
+    if tabs is not None:
+        paragraph_properties.remove(tabs)
+
+    indent = paragraph_properties.find(qn("w:ind"))
+    if indent is not None:
+        paragraph_properties.remove(indent)
+
+
+def strip_leading_whitespace_runs(paragraph) -> None:
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+
+        stripped_text = run.text.lstrip(" \t")
+        if stripped_text != run.text:
+            run.text = stripped_text
+
+        if run.text:
+            break
+
+
+def prepend_plain_number(paragraph, index: int) -> None:
+    strip_paragraph_numbering(paragraph)
+    apply_reference_entry_paragraph_format(paragraph)
+    strip_leading_whitespace_runs(paragraph)
+
+    number_run = paragraph.add_run()
+    number_run.text = f"{index}."
+    set_run_fonts(number_run)
+    number_run.font.size = Pt(BODY_FONT_SIZE)
+    number_run.font.italic = False
+    paragraph._p.insert(0, number_run._r)
+
+
+def normalize_reference_section_lists(document: Document) -> None:
+    in_reference_section = False
+    entry_index = 0
+
+    for paragraph in document.paragraphs:
+        if is_reference_section_heading(paragraph):
+            in_reference_section = True
+            entry_index = 0
+            continue
+
+        if in_reference_section and is_heading(paragraph):
+            in_reference_section = False
+            entry_index = 0
+
+        if not in_reference_section or not has_numbering(paragraph):
+            continue
+
+        entry_index += 1
+        prepend_plain_number(paragraph, entry_index)
+
+
+def is_reference_section_entry(paragraph, in_reference_section: bool) -> bool:
+    return in_reference_section and bool(paragraph.text.strip())
 
 
 def _make_page_number_footer(
@@ -1044,10 +1148,68 @@ def postprocess_docx(
 
     configure_document_layout(document)
     configure_document_styles(document)
+    normalize_reference_section_lists(document)
     scale_inline_shapes(document, image_options)
     base_section = document.sections[0]
+    body_paragraphs = tuple(document.paragraphs)
+    body_paragraph_elements = {paragraph._element for paragraph in body_paragraphs}
+
+    in_reference_section = False
+
+    for paragraph in body_paragraphs:
+        if not paragraph.text.strip() and not contains_drawing(paragraph):
+            continue
+
+        if is_reference_section_heading(paragraph):
+            in_reference_section = True
+            apply_heading_paragraph_format(paragraph)
+            for run in paragraph.runs:
+                set_run_fonts(run)
+                run.font.italic = False
+            continue
+
+        if is_heading(paragraph):
+            in_reference_section = False
+            apply_heading_paragraph_format(paragraph)
+            for run in paragraph.runs:
+                set_run_fonts(run)
+                run.font.italic = False
+            continue
+
+        if is_caption(paragraph):
+            apply_caption_paragraph_format(paragraph)
+            for run in paragraph.runs:
+                set_run_fonts(run)
+                run.font.italic = False
+            continue
+
+        if contains_drawing(paragraph):
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(6)
+            paragraph.paragraph_format.space_after = Pt(6)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                set_run_fonts(run)
+            continue
+
+        if is_reference_section_entry(paragraph, in_reference_section):
+            apply_reference_entry_paragraph_format(paragraph)
+            strip_leading_whitespace_runs(paragraph)
+            for run in paragraph.runs:
+                set_run_fonts(run)
+                run.font.italic = False
+            continue
+
+        apply_body_paragraph_format(paragraph)
+
+        for run in paragraph.runs:
+            set_run_fonts(run)
+            run.font.italic = False
 
     for paragraph in iter_paragraphs(document):
+        if paragraph._element in body_paragraph_elements:
+            continue
+
         if not paragraph.text.strip() and not contains_drawing(paragraph):
             continue
 
