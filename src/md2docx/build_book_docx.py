@@ -4,13 +4,15 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from docx import Document
 from docxcompose.composer import Composer
@@ -46,8 +48,15 @@ DEFAULT_TABLE_OVERFLOW_THRESHOLD = 1.12
 DEFAULT_TABLE_MIN_FONT_SIZE = 9.0
 EQUATION_NUMBER_COLUMN_RATIO = 0.14
 EQUATION_LAYOUT_MARK = "EquationLayout"
+TOC_TITLE = "目录"
+TOC_PLACEHOLDER = "__MD_BOOK_TOC__"
+FIRST_MAIN_CHAPTER_BOOKMARK = "MdBookFirstMainChapter"
+OFFICE_AUTOMATION_PROGIDS = ("Word.Application", "kwps.Application")
 
-CHAPTER_TITLE_PATTERN = re.compile(r"^(前言|自序|第\s*[0-9一二三四五六七八九十]+\s*章)")
+CHAPTER_TITLE_PATTERN = re.compile(
+    r"^(前言|自序|目录|第\s*[0-9一二三四五六七八九十]+\s*章)"
+)
+MAIN_CHAPTER_PATTERN = re.compile(r"^第\s*[0-9一二三四五六七八九十]+\s*章")
 CAPTION_PREFIX_PATTERN = re.compile(
     r"^(图|表|算法)\s*([0-9一二三四五六七八九十]+(?:[-—–.．][0-9一二三四五六七八九十]+)*)\s*[：:．。.]?\s*(.*)$"
 )
@@ -887,6 +896,91 @@ def apply_caption_paragraph_format(paragraph) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
+def clear_paragraph_borders(paragraph) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    paragraph_borders = paragraph_properties.find(qn("w:pBdr"))
+    if paragraph_borders is not None:
+        paragraph_properties.remove(paragraph_borders)
+
+
+def remove_paragraph(paragraph) -> None:
+    element = paragraph._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
+
+def remove_extra_front_matter_section_breaks(document: Document) -> None:
+    paragraphs = list(document.paragraphs)
+    self_preface_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if paragraph.text.strip() == "自序"
+        ),
+        None,
+    )
+    if self_preface_index is None:
+        return
+
+    section_break_paragraphs = []
+    for paragraph in paragraphs[:self_preface_index]:
+        if paragraph.text.strip():
+            continue
+        paragraph_properties = paragraph._element.find(qn("w:pPr"))
+        section_properties = (
+            paragraph_properties.find(qn("w:sectPr"))
+            if paragraph_properties is not None
+            else None
+        )
+        if section_properties is not None:
+            section_break_paragraphs.append(paragraph)
+
+    for paragraph in section_break_paragraphs[:-1]:
+        remove_paragraph(paragraph)
+
+
+def normalize_toc_region(document: Document) -> None:
+    title_index = next(
+        (
+            index
+            for index, paragraph in enumerate(document.paragraphs)
+            if paragraph.text.strip() == TOC_TITLE
+        ),
+        None,
+    )
+    if title_index is None:
+        return
+
+    title_paragraph = document.paragraphs[title_index]
+    try:
+        title_paragraph.style = document.styles["Heading 1"]
+    except KeyError:
+        pass
+    apply_heading_paragraph_format(title_paragraph)
+    clear_paragraph_borders(title_paragraph)
+    for run in title_paragraph.runs:
+        set_run_fonts(run)
+        run.font.italic = False
+
+    for paragraph in document.paragraphs[title_index + 1 :]:
+        text = paragraph.text.strip()
+        style_name = get_paragraph_style_name(paragraph).lower()
+        if (
+            text
+            and get_paragraph_style_name(paragraph) == "Heading 1"
+            and MAIN_CHAPTER_PATTERN.match(text)
+        ):
+            break
+
+        clear_paragraph_borders(paragraph)
+        if style_name.startswith("toc"):
+            for run in paragraph.runs:
+                set_run_fonts(run)
+                run.font.underline = False
+                run.font.italic = False
+
+
 def ensure_reference_doc(reference_doc: Path) -> None:
     reference_doc.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
@@ -1092,37 +1186,13 @@ def add_page_numbers_from_chapter(document: Document) -> None:
     - The first main chapter section (第X章) resets to Arabic numeral 1.
     - Subsequent chapter sections continue the Arabic numbering.
     """
-    body = document._element.body
-    section_has_main_chapter: list[bool] = []
-    current_has_main_chapter = False
-
-    for element in body:
-        if element.tag == qn("w:p"):
-            pPr = element.find(qn("w:pPr"))
-            if pPr is not None:
-                pStyle = pPr.find(qn("w:pStyle"))
-                if pStyle is not None:
-                    style_val = pStyle.get(qn("w:val"), "")
-                    if style_val in ("Heading1", "Title"):
-                        text = "".join(t.text or "" for t in element.iter(qn("w:t")))
-                        if re.search(
-                            r"第\s*[0-9一二三四五六七八九十]+\s*章", text.strip()
-                        ):
-                            current_has_main_chapter = True
-                sectPr_in_p = pPr.find(qn("w:sectPr")) if pPr is not None else None
-                if sectPr_in_p is not None:
-                    section_has_main_chapter.append(current_has_main_chapter)
-                    current_has_main_chapter = False
-        elif element.tag == qn("w:sectPr"):
-            section_has_main_chapter.append(current_has_main_chapter)
-
-    if not section_has_main_chapter:
-        section_has_main_chapter = [current_has_main_chapter]
-
-    first_chapter_idx = next(
-        (i for i, has_chapter in enumerate(section_has_main_chapter) if has_chapter),
-        None,
+    first_chapter_paragraph = find_first_main_chapter_paragraph(document)
+    first_chapter_idx = (
+        get_section_index_for_paragraph(document, first_chapter_paragraph)
+        if first_chapter_paragraph is not None
+        else None
     )
+
     for idx, section in enumerate(document.sections):
         if first_chapter_idx is None or idx < first_chapter_idx:
             # Preface / front-matter sections: Roman numerals from i.
@@ -1139,6 +1209,253 @@ def add_page_numbers_from_chapter(document: Document) -> None:
             _make_page_number_footer(section, fmt="decimal")
 
 
+def normalize_office_paragraph_text(text: str) -> str:
+    return text.replace("\r", "").replace("\x07", "").strip()
+
+
+def find_first_main_chapter_paragraph(document: Document):
+    for paragraph in document.paragraphs:
+        if get_paragraph_style_name(paragraph) not in {"Heading 1", "Title"}:
+            continue
+        if MAIN_CHAPTER_PATTERN.match(paragraph.text.strip()):
+            return paragraph
+    return None
+
+
+def get_section_index_for_paragraph(document: Document, target_paragraph) -> int | None:
+    current_section_idx = 0
+    body = document._element.body
+
+    for element in body:
+        if element is target_paragraph._element:
+            return current_section_idx
+
+        if element.tag == qn("w:p"):
+            pPr = element.find(qn("w:pPr"))
+            sectPr_in_p = pPr.find(qn("w:sectPr")) if pPr is not None else None
+            if sectPr_in_p is not None:
+                current_section_idx += 1
+        elif element.tag == qn("w:sectPr"):
+            current_section_idx += 1
+
+    return None
+
+
+def open_office_automation_app(progid: str | None = None):
+    try:
+        import pythoncom
+        from win32com.client import DispatchEx
+    except ImportError as exc:
+        raise RuntimeError(
+            "Office/WPS automation requires pywin32 (win32com)."
+        ) from exc
+
+    pythoncom.CoInitialize()
+    candidate_progids = (progid,) if progid is not None else OFFICE_AUTOMATION_PROGIDS
+    last_error = None
+    for candidate_progid in candidate_progids:
+        try:
+            app = DispatchEx(candidate_progid)
+            try:
+                app.Visible = False
+            except Exception:
+                pass
+            try:
+                app.DisplayAlerts = 0
+            except Exception:
+                pass
+            return pythoncom, app, candidate_progid
+        except Exception as exc:
+            last_error = exc
+
+    pythoncom.CoUninitialize()
+    raise RuntimeError(
+        "Could not start Microsoft Word or WPS Writer automation."
+    ) from last_error
+
+
+def close_open_document_in_active_office_apps(docx_path: Path) -> None:
+    try:
+        import pythoncom
+        from win32com.client import GetActiveObject
+    except ImportError:
+        return
+
+    target_path = os.path.normcase(str(docx_path.resolve()))
+    pythoncom.CoInitialize()
+    try:
+        for progid in OFFICE_AUTOMATION_PROGIDS:
+            try:
+                app = GetActiveObject(progid)
+            except Exception:
+                continue
+
+            try:
+                document_count = app.Documents.Count
+            except Exception:
+                continue
+
+            for index in range(document_count, 0, -1):
+                try:
+                    document = app.Documents(index)
+                    document_path = os.path.normcase(str(Path(document.FullName)))
+                except Exception:
+                    continue
+
+                if document_path != target_path:
+                    continue
+
+                try:
+                    document.Close(SaveChanges=False)
+                except Exception:
+                    pass
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def run_office_document_action(
+    docx_path: Path,
+    action: Callable[[object], None],
+) -> None:
+    last_error = None
+    for progid in OFFICE_AUTOMATION_PROGIDS:
+        pythoncom = None
+        app = None
+        document = None
+        try:
+            pythoncom, app, resolved_progid = open_office_automation_app(progid)
+            document = app.Documents.Open(str(docx_path.resolve()))
+            action(document)
+            document.Save()
+            return
+        except Exception as exc:
+            last_error = RuntimeError(
+                f"Failed to automate {progid} for {docx_path.name}: {exc}"
+            )
+        finally:
+            if document is not None:
+                try:
+                    document.Close(SaveChanges=False)
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+            if pythoncom is not None:
+                pythoncom.CoUninitialize()
+
+    if last_error is not None:
+        raise last_error
+
+
+def find_first_main_chapter_office_paragraph(document):
+    for paragraph in document.Paragraphs:
+        text = normalize_office_paragraph_text(paragraph.Range.Text)
+        if MAIN_CHAPTER_PATTERN.match(text):
+            return paragraph
+    return None
+
+
+def insert_toc_scaffold(docx_path: Path) -> None:
+    document = Document(docx_path)
+    first_main_paragraph = find_first_main_chapter_paragraph(document)
+    if first_main_paragraph is None:
+        raise RuntimeError("Could not find the first main chapter heading.")
+
+    toc_placeholder_paragraph = first_main_paragraph.insert_paragraph_before(
+        TOC_PLACEHOLDER
+    )
+    title_paragraph = toc_placeholder_paragraph.insert_paragraph_before(
+        TOC_TITLE, style="Heading 1"
+    )
+
+    apply_heading_paragraph_format(title_paragraph)
+    clear_paragraph_borders(title_paragraph)
+    for run in title_paragraph.runs:
+        set_run_fonts(run)
+        run.font.italic = False
+
+    toc_placeholder_paragraph.paragraph_format.first_line_indent = Pt(0)
+    toc_placeholder_paragraph.paragraph_format.space_before = Pt(0)
+    toc_placeholder_paragraph.paragraph_format.space_after = Pt(0)
+
+    document.save(docx_path)
+
+
+def insert_toc_section_with_office(docx_path: Path) -> None:
+    def action(document) -> None:
+        first_main_paragraph = find_first_main_chapter_office_paragraph(document)
+        if first_main_paragraph is None:
+            raise RuntimeError("Could not find the first main chapter heading.")
+
+        if document.Bookmarks.Exists(FIRST_MAIN_CHAPTER_BOOKMARK):
+            document.Bookmarks(FIRST_MAIN_CHAPTER_BOOKMARK).Delete()
+        document.Bookmarks.Add(FIRST_MAIN_CHAPTER_BOOKMARK, first_main_paragraph.Range)
+
+        marker_paragraph = None
+        for paragraph in document.Paragraphs:
+            paragraph_text = normalize_office_paragraph_text(paragraph.Range.Text)
+            if paragraph_text == TOC_PLACEHOLDER:
+                marker_paragraph = paragraph
+                break
+
+        if marker_paragraph is None:
+            raise RuntimeError("Failed to find TOC insertion marker.")
+
+        toc_range = marker_paragraph.Range
+        toc_range.Text = ""
+        document.TablesOfContents.Add(
+            Range=toc_range,
+            UseHeadingStyles=True,
+            UpperHeadingLevel=1,
+            LowerHeadingLevel=3,
+            UseFields=False,
+            RightAlignPageNumbers=True,
+            IncludePageNumbers=True,
+            UseHyperlinks=False,
+            HidePageNumbersInWeb=False,
+            UseOutlineLevels=True,
+        )
+
+        chapter_range = document.Bookmarks(FIRST_MAIN_CHAPTER_BOOKMARK).Range
+        document.Range(chapter_range.Start, chapter_range.Start).InsertBreak(2)
+        document.Bookmarks(FIRST_MAIN_CHAPTER_BOOKMARK).Delete()
+        document.Repaginate()
+        for index in range(1, document.TablesOfContents.Count + 1):
+            document.TablesOfContents(index).Update()
+
+    run_office_document_action(docx_path, action)
+
+
+def refresh_page_numbers(docx_path: Path) -> None:
+    last_error = None
+    for _ in range(10):
+        try:
+            document = Document(docx_path)
+            remove_extra_front_matter_section_breaks(document)
+            add_page_numbers_from_chapter(document)
+            normalize_toc_region(document)
+            document.save(docx_path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.3)
+
+    if last_error is not None:
+        raise last_error
+
+
+def update_fields_with_office(docx_path: Path) -> None:
+    def action(document) -> None:
+        document.Repaginate()
+        for index in range(1, document.TablesOfContents.Count + 1):
+            document.TablesOfContents(index).Update()
+
+    run_office_document_action(docx_path, action)
+
+
 def postprocess_docx(
     docx_path: Path,
     image_options: ImageSizingOptions,
@@ -1149,6 +1466,7 @@ def postprocess_docx(
     configure_document_layout(document)
     configure_document_styles(document)
     normalize_reference_section_lists(document)
+    remove_extra_front_matter_section_breaks(document)
     scale_inline_shapes(document, image_options)
     base_section = document.sections[0]
     body_paragraphs = tuple(document.paragraphs)
@@ -1282,6 +1600,7 @@ def postprocess_docx(
                         run.font.italic = False
 
     add_page_numbers_from_chapter(document)
+    normalize_toc_region(document)
     document.save(docx_path)
 
 
@@ -1352,8 +1671,18 @@ def merge_docx_files(
         composer.append(Document(docx_file))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[merge] saving composed document to {output_path}", flush=True)
     composer.save(str(output_path))
+    print("[merge] postprocessing merged docx", flush=True)
     postprocess_docx(output_path, image_options, table_options)
+    print("[merge] inserting TOC scaffold", flush=True)
+    insert_toc_scaffold(output_path)
+    print("[merge] generating TOC with Office/WPS", flush=True)
+    insert_toc_section_with_office(output_path)
+    print("[merge] refreshing page numbers", flush=True)
+    refresh_page_numbers(output_path)
+    print("[merge] refreshing TOC page references", flush=True)
+    update_fields_with_office(output_path)
 
 
 def build_output_name(markdown_path: Path, input_root: Path) -> str:
@@ -1412,11 +1741,14 @@ def main() -> int:
     for markdown_path in markdown_files:
         chapter_key = markdown_path.relative_to(input_root).parts[0]
         output_path = intermediate_dir / build_output_name(markdown_path, input_root)
-        print(f"[pandoc] {markdown_path} -> {output_path}")
+        print(f"[pandoc] {markdown_path} -> {output_path}", flush=True)
         run_pandoc(markdown_path, output_path, defaults_path, reference_doc)
+        print(f"[postprocess] {output_path}", flush=True)
         postprocess_docx(output_path, image_options, table_options)
+        print(f"[postprocess-done] {output_path}", flush=True)
         generated_docx_files.append((chapter_key, output_path))
 
+    print("[main] starting merged document assembly", flush=True)
     merge_docx_files(generated_docx_files, merged_output, image_options, table_options)
     print(f"[merged] {merged_output}")
 
