@@ -49,7 +49,7 @@ EQUATION_LAYOUT_MARK = "EquationLayout"
 
 CHAPTER_TITLE_PATTERN = re.compile(r"^(前言|自序|第\s*[0-9一二三四五六七八九十]+\s*章)")
 CAPTION_PREFIX_PATTERN = re.compile(
-    r"^(图|表)\s*([0-9一二三四五六七八九十]+(?:[-—–.．][0-9一二三四五六七八九十]+)*)\s*[：:．。.]?\s*(.*)$"
+    r"^(图|表|算法)\s*([0-9一二三四五六七八九十]+(?:[-—–.．][0-9一二三四五六七八九十]+)*)\s*[：:．。.]?\s*(.*)$"
 )
 EQUATION_TAG_PATTERN = re.compile(r"\\tag\*?\{([^{}]+)\}")
 EQUATION_NUMBER_PATTERN = re.compile(r"^\([^)]+\)$")
@@ -926,7 +926,7 @@ def is_caption(paragraph) -> bool:
     text = paragraph.text.strip()
     style_name = get_paragraph_style_name(paragraph)
     return style_name == "Caption" or bool(
-        re.match(r"^(图|表)\s*[0-9一二三四五六七八九十]+", text)
+        re.match(r"^(图|表|算法)\s*[0-9一二三四五六七八九十]+", text)
     )
 
 
