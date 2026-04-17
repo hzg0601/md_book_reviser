@@ -16,12 +16,14 @@ from typing import Callable, Iterable
 
 from docx import Document
 from docxcompose.composer import Composer
+from lxml import etree
 from docx.enum.section import WD_SECTION_START
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Emu, Pt, RGBColor
 
 
@@ -50,8 +52,13 @@ EQUATION_NUMBER_COLUMN_RATIO = 0.14
 EQUATION_LAYOUT_MARK = "EquationLayout"
 TOC_TITLE = "目录"
 TOC_PLACEHOLDER = "__MD_BOOK_TOC__"
+COVER_PLACEHOLDER = "__MD_BOOK_COVER__"
 FIRST_MAIN_CHAPTER_BOOKMARK = "MdBookFirstMainChapter"
 OFFICE_AUTOMATION_PROGIDS = ("Word.Application", "kwps.Application")
+AUTHOR_BIO_DIR_NAME = "作者简介"
+AUTHOR_BIO_MD_NAME = "作者简介.md"
+COVER_IMAGE_NAME = "封面.png"
+NUMBERED_FRONT_MATTER_TITLES = {"前言", "自序", TOC_TITLE}
 
 CHAPTER_TITLE_PATTERN = re.compile(
     r"^(前言|自序|目录|第\s*[0-9一二三四五六七八九十]+\s*章)"
@@ -198,6 +205,20 @@ def build_table_sizing_options(args: argparse.Namespace) -> TableSizingOptions:
     )
 
 
+def find_author_bio_markdown(input_root: Path) -> Path | None:
+    candidate = input_root / AUTHOR_BIO_DIR_NAME / AUTHOR_BIO_MD_NAME
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def find_cover_image(input_root: Path) -> Path | None:
+    candidate = input_root / COVER_IMAGE_NAME
+    if candidate.exists():
+        return candidate
+    return None
+
+
 def load_md_book_path_from_utils() -> Path | None:
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
@@ -226,6 +247,23 @@ def load_md_book_path_from_utils() -> Path | None:
     if not MD_BOOK_PATH:
         return None
     return Path(MD_BOOK_PATH).expanduser()
+
+
+def create_cover_placeholder_docx(output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    configure_document_layout(document)
+    configure_document_styles(document)
+
+    paragraph = (
+        document.paragraphs[0] if document.paragraphs else document.add_paragraph()
+    )
+    paragraph.text = COVER_PLACEHOLDER
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+
+    document.save(output_path)
 
 
 def rewrite_equation_tags_for_docx(content: str) -> str:
@@ -896,6 +934,26 @@ def apply_caption_paragraph_format(paragraph) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
+def contains_drawing(paragraph) -> bool:
+    return bool(paragraph._element.xpath(".//w:drawing"))
+
+
+def has_numbering(paragraph) -> bool:
+    paragraph_properties = paragraph._p.pPr
+    if paragraph_properties is None:
+        return False
+    return paragraph_properties.find(qn("w:numPr")) is not None
+
+
+def is_caption(paragraph) -> bool:
+    text = paragraph.text.strip()
+    if not text:
+        return False
+    if get_paragraph_style_name(paragraph) == "Caption":
+        return True
+    return CAPTION_PREFIX_PATTERN.match(text) is not None
+
+
 def clear_paragraph_borders(paragraph) -> None:
     paragraph_properties = paragraph._element.get_or_add_pPr()
     paragraph_borders = paragraph_properties.find(qn("w:pBdr"))
@@ -910,8 +968,165 @@ def remove_paragraph(paragraph) -> None:
         parent.remove(element)
 
 
+def save_document_with_retry(document: Document, docx_path: Path) -> None:
+    temp_path = docx_path.with_name(f"{docx_path.stem}.__tmp__{docx_path.suffix}")
+    document.save(temp_path)
+
+    last_error = None
+    try:
+        for _ in range(20):
+            try:
+                os.replace(temp_path, docx_path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.3)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    if last_error is not None:
+        raise last_error
+
+
+def replace_file_with_retry(source_path: Path, target_path: Path) -> None:
+    last_error = None
+    try:
+        for _ in range(20):
+            try:
+                os.replace(source_path, target_path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.3)
+    finally:
+        source_path.unlink(missing_ok=True)
+
+    if last_error is not None:
+        raise PermissionError(
+            f"Failed to replace {target_path}. Close the file in Word/WPS and pause OneDrive syncing before retrying."
+        ) from last_error
+
+
+def insert_section_break_before(paragraph, section_properties) -> None:
+    section_break_paragraph = OxmlElement("w:p")
+    paragraph_properties = OxmlElement("w:pPr")
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:before"), "0")
+    spacing.set(qn("w:after"), "0")
+    paragraph_properties.append(spacing)
+
+    indent = OxmlElement("w:ind")
+    indent.set(qn("w:firstLine"), "0")
+    paragraph_properties.append(indent)
+
+    section_definition = deepcopy(section_properties)
+    section_type = section_definition.find(qn("w:type"))
+    if section_type is None:
+        section_type = OxmlElement("w:type")
+        section_definition.insert(0, section_type)
+    section_type.set(qn("w:val"), "nextPage")
+    paragraph_properties.append(section_definition)
+    section_break_paragraph.append(paragraph_properties)
+    paragraph._p.addprevious(section_break_paragraph)
+
+
+def prepare_cover_and_front_matter_sections(docx_path: Path) -> None:
+    document = Document(docx_path)
+    if not document.paragraphs:
+        raise RuntimeError("Merged document has no paragraphs.")
+
+    section_template = deepcopy(document.sections[0]._sectPr)
+    first_paragraph = document.paragraphs[0]
+    cover_break_paragraph = first_paragraph.insert_paragraph_before(" ")
+    for run in cover_break_paragraph.runs:
+        run.font.hidden = True
+    cover_break_paragraph.paragraph_format.first_line_indent = Pt(0)
+    cover_break_paragraph.paragraph_format.space_before = Pt(0)
+    cover_break_paragraph.paragraph_format.space_after = Pt(0)
+    cover_break_properties = cover_break_paragraph._p.get_or_add_pPr()
+    existing_cover_section = cover_break_properties.find(qn("w:sectPr"))
+    if existing_cover_section is not None:
+        cover_break_properties.remove(existing_cover_section)
+    cover_break_properties.append(deepcopy(section_template))
+
+    cover_paragraph = cover_break_paragraph.insert_paragraph_before(COVER_PLACEHOLDER)
+    cover_paragraph.paragraph_format.first_line_indent = Pt(0)
+    cover_paragraph.paragraph_format.space_before = Pt(0)
+    cover_paragraph.paragraph_format.space_after = Pt(0)
+    cover_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    preface_paragraph = next(
+        (
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.strip() == "前言"
+        ),
+        None,
+    )
+    if preface_paragraph is None:
+        raise RuntimeError("Could not find the preface heading for front-matter split.")
+
+    insert_section_break_before(preface_paragraph, section_template)
+
+    save_document_with_retry(document, docx_path)
+
+
+def convert_inline_shape_to_floating_anchor(inline) -> object:
+    extent = inline.find(qn("wp:extent"))
+    doc_properties = inline.find(qn("wp:docPr"))
+    frame_properties = inline.find(qn("wp:cNvGraphicFramePr"))
+    graphic = inline.find(qn("a:graphic"))
+    effect_extent = inline.find(qn("wp:effectExtent"))
+
+    if (
+        extent is None
+        or doc_properties is None
+        or frame_properties is None
+        or graphic is None
+    ):
+        raise RuntimeError("Inline picture is missing required drawing nodes.")
+
+    extent_xml = etree.tostring(extent, encoding="unicode")
+    doc_properties_xml = etree.tostring(doc_properties, encoding="unicode")
+    frame_properties_xml = etree.tostring(frame_properties, encoding="unicode")
+    graphic_xml = etree.tostring(graphic, encoding="unicode")
+    effect_extent_xml = (
+        etree.tostring(effect_extent, encoding="unicode")
+        if effect_extent is not None
+        else ""
+    )
+    anchor = parse_xml(
+        f"""
+        <wp:anchor distT="0" distB="0" distL="0" distR="0"
+            simplePos="0" relativeHeight="251659264" behindDoc="0"
+            locked="0" layoutInCell="1" allowOverlap="1"
+            {nsdecls('wp', 'a', 'pic', 'r')}>
+          <wp:simplePos x="0" y="0"/>
+          <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>
+          <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>
+          {extent_xml}
+          {effect_extent_xml}
+          <wp:wrapNone/>
+          {doc_properties_xml}
+          {frame_properties_xml}
+          {graphic_xml}
+        </wp:anchor>
+        """
+    )
+    inline.getparent().replace(inline, anchor)
+    return anchor
+
+
 def remove_extra_front_matter_section_breaks(document: Document) -> None:
     paragraphs = list(document.paragraphs)
+    first_numbered_front_matter_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if paragraph.text.strip() in NUMBERED_FRONT_MATTER_TITLES
+        ),
+        None,
+    )
     self_preface_index = next(
         (
             index
@@ -924,7 +1139,12 @@ def remove_extra_front_matter_section_breaks(document: Document) -> None:
         return
 
     section_break_paragraphs = []
-    for paragraph in paragraphs[:self_preface_index]:
+    for index, paragraph in enumerate(paragraphs[:self_preface_index]):
+        if (
+            first_numbered_front_matter_index is not None
+            and index < first_numbered_front_matter_index
+        ):
+            continue
         if paragraph.text.strip():
             continue
         paragraph_properties = paragraph._element.find(qn("w:pPr"))
@@ -1004,58 +1224,30 @@ def iter_paragraphs(document: Document) -> Iterable:
                 for paragraph in cell.paragraphs:
                     yield paragraph
 
-    for section in document.sections:
-        for paragraph in section.header.paragraphs:
-            yield paragraph
-        for paragraph in section.footer.paragraphs:
-            yield paragraph
-
-
-def is_heading(paragraph) -> bool:
-    style_name = get_paragraph_style_name(paragraph)
-    return style_name.startswith("Heading") or style_name == "Title"
-
-
-def is_caption(paragraph) -> bool:
-    text = paragraph.text.strip()
-    style_name = get_paragraph_style_name(paragraph)
-    return style_name == "Caption" or bool(
-        re.match(r"^(图|表|算法)\s*[0-9一二三四五六七八九十]+", text)
-    )
-
-
-def contains_drawing(paragraph) -> bool:
-    for run in paragraph.runs:
-        if run._element.xpath(".//w:drawing"):
-            return True
-    return False
-
-
-def is_reference_section_heading(paragraph) -> bool:
-    return paragraph.text.strip() in {"参考文献", "相关链接"}
-
-
-def has_numbering(paragraph) -> bool:
-    paragraph_properties = paragraph._element.find(qn("w:pPr"))
-    if paragraph_properties is None:
-        return False
-    return paragraph_properties.find(qn("w:numPr")) is not None
-
 
 def strip_paragraph_numbering(paragraph) -> None:
-    paragraph_properties = paragraph._element.get_or_add_pPr()
-
-    numbering = paragraph_properties.find(qn("w:numPr"))
-    if numbering is not None:
-        paragraph_properties.remove(numbering)
-
-    tabs = paragraph_properties.find(qn("w:tabs"))
-    if tabs is not None:
-        paragraph_properties.remove(tabs)
+    paragraph_properties = paragraph._p.get_or_add_pPr()
+    numbering_properties = paragraph_properties.find(qn("w:numPr"))
+    if numbering_properties is not None:
+        paragraph_properties.remove(numbering_properties)
 
     indent = paragraph_properties.find(qn("w:ind"))
     if indent is not None:
         paragraph_properties.remove(indent)
+
+
+def is_reference_section_heading(paragraph) -> bool:
+    if get_paragraph_style_name(paragraph) not in {"Heading 1", "Heading 2", "Title"}:
+        return False
+    text = paragraph.text.strip()
+    return ("参考文献" in text) or ("相关链接" in text)
+
+
+def is_heading(paragraph) -> bool:
+    style_name = get_paragraph_style_name(paragraph)
+    if style_name in {"Heading 1", "Heading 2", "Heading 3", "Title"}:
+        return True
+    return bool(CHAPTER_TITLE_PATTERN.match(paragraph.text.strip()))
 
 
 def strip_leading_whitespace_runs(paragraph) -> None:
@@ -1123,6 +1315,7 @@ def _make_page_number_footer(
              "upperRoman" (I,II,III…).
     """
     footer = section.footer
+    footer.is_linked_to_previous = False
     for para in footer.paragraphs:
         para.clear()
 
@@ -1178,14 +1371,43 @@ def _make_page_number_footer(
                 sect_pr.remove(pg_num_type)
 
 
+def _clear_page_number_footer(section) -> None:
+    footer = section.footer
+    footer.is_linked_to_previous = False
+    for para in footer.paragraphs:
+        para.clear()
+
+    sect_pr = section._sectPr
+    pg_num_type = sect_pr.find(qn("w:pgNumType"))
+    if pg_num_type is not None:
+        sect_pr.remove(pg_num_type)
+
+
+def find_first_numbered_front_matter_paragraph(document: Document):
+    for paragraph in document.paragraphs:
+        if get_paragraph_style_name(paragraph) not in {"Heading 1", "Title"}:
+            continue
+        if paragraph.text.strip() in NUMBERED_FRONT_MATTER_TITLES:
+            return paragraph
+    return None
+
+
 def add_page_numbers_from_chapter(document: Document) -> None:
     """
     Add centered bottom page numbers to all sections:
-    - Sections before the first main chapter (前言, 自序, etc.) use lowercase
-      Roman numerals (i, ii, iii…) starting from i.
+        - Sections before the first main chapter (前言, 自序, 目录, etc.) use uppercase
+            Roman numerals (I, II, III…) starting from I.
     - The first main chapter section (第X章) resets to Arabic numeral 1.
     - Subsequent chapter sections continue the Arabic numbering.
     """
+    first_numbered_front_matter_paragraph = find_first_numbered_front_matter_paragraph(
+        document
+    )
+    first_numbered_front_matter_idx = (
+        get_section_index_for_paragraph(document, first_numbered_front_matter_paragraph)
+        if first_numbered_front_matter_paragraph is not None
+        else None
+    )
     first_chapter_paragraph = find_first_main_chapter_paragraph(document)
     first_chapter_idx = (
         get_section_index_for_paragraph(document, first_chapter_paragraph)
@@ -1194,11 +1416,16 @@ def add_page_numbers_from_chapter(document: Document) -> None:
     )
 
     for idx, section in enumerate(document.sections):
-        if first_chapter_idx is None or idx < first_chapter_idx:
-            # Preface / front-matter sections: Roman numerals from i.
+        if (
+            first_numbered_front_matter_idx is not None
+            and idx < first_numbered_front_matter_idx
+        ):
+            _clear_page_number_footer(section)
+        elif first_chapter_idx is None or idx < first_chapter_idx:
+            # Numbered front-matter sections: Roman numerals from i.
             _make_page_number_footer(
                 section,
-                start_page=(1 if idx == 0 else None),
+                start_page=(1 if idx == first_numbered_front_matter_idx else None),
                 fmt="upperRoman",
             )
         elif idx == first_chapter_idx:
@@ -1207,6 +1434,32 @@ def add_page_numbers_from_chapter(document: Document) -> None:
         else:
             # Subsequent chapters: continue Arabic numbering.
             _make_page_number_footer(section, fmt="decimal")
+
+
+def ensure_first_main_chapter_starts_new_section(document: Document) -> None:
+    toc_title_paragraph = next(
+        (
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.strip() == TOC_TITLE
+        ),
+        None,
+    )
+    first_main_paragraph = find_first_main_chapter_paragraph(document)
+    if toc_title_paragraph is None or first_main_paragraph is None:
+        return
+
+    toc_section_idx = get_section_index_for_paragraph(document, toc_title_paragraph)
+    first_main_section_idx = get_section_index_for_paragraph(
+        document, first_main_paragraph
+    )
+    if toc_section_idx is None or first_main_section_idx is None:
+        return
+    if toc_section_idx != first_main_section_idx:
+        return
+
+    section_template = deepcopy(document.sections[first_main_section_idx]._sectPr)
+    insert_section_break_before(first_main_paragraph, section_template)
 
 
 def normalize_office_paragraph_text(text: str) -> str:
@@ -1358,30 +1611,74 @@ def find_first_main_chapter_office_paragraph(document):
     return None
 
 
-def insert_toc_scaffold(docx_path: Path) -> None:
+def insert_cover_image_with_office(docx_path: Path, cover_image_path: Path) -> None:
     document = Document(docx_path)
-    first_main_paragraph = find_first_main_chapter_paragraph(document)
-    if first_main_paragraph is None:
-        raise RuntimeError("Could not find the first main chapter heading.")
-
-    toc_placeholder_paragraph = first_main_paragraph.insert_paragraph_before(
-        TOC_PLACEHOLDER
+    cover_paragraph = next(
+        (
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.strip() == COVER_PLACEHOLDER
+        ),
+        None,
     )
-    title_paragraph = toc_placeholder_paragraph.insert_paragraph_before(
-        TOC_TITLE, style="Heading 1"
+    if cover_paragraph is None:
+        raise RuntimeError("Failed to find cover placeholder.")
+
+    for run in list(cover_paragraph.runs):
+        run.text = ""
+
+    first_section = document.sections[0]
+    image_run = cover_paragraph.add_run()
+    image_run.add_picture(
+        str(cover_image_path.resolve()),
+        width=first_section.page_width,
+        height=first_section.page_height,
     )
+    inline = image_run._r.xpath("./w:drawing/wp:inline")
+    if not inline:
+        raise RuntimeError("Failed to create inline cover image.")
 
-    apply_heading_paragraph_format(title_paragraph)
-    clear_paragraph_borders(title_paragraph)
-    for run in title_paragraph.runs:
-        set_run_fonts(run)
-        run.font.italic = False
+    convert_inline_shape_to_floating_anchor(inline[0])
+    save_document_with_retry(document, docx_path)
 
-    toc_placeholder_paragraph.paragraph_format.first_line_indent = Pt(0)
-    toc_placeholder_paragraph.paragraph_format.space_before = Pt(0)
-    toc_placeholder_paragraph.paragraph_format.space_after = Pt(0)
 
-    document.save(docx_path)
+def insert_toc_scaffold(docx_path: Path) -> None:
+    last_error = None
+    for _ in range(10):
+        try:
+            document = Document(docx_path)
+            first_main_paragraph = find_first_main_chapter_paragraph(document)
+            if first_main_paragraph is None:
+                raise RuntimeError("Could not find the first main chapter heading.")
+
+            toc_placeholder_paragraph = first_main_paragraph.insert_paragraph_before(
+                TOC_PLACEHOLDER
+            )
+            title_paragraph = toc_placeholder_paragraph.insert_paragraph_before(
+                TOC_TITLE, style="Heading 1"
+            )
+
+            apply_heading_paragraph_format(title_paragraph)
+            clear_paragraph_borders(title_paragraph)
+            for run in title_paragraph.runs:
+                set_run_fonts(run)
+                run.font.italic = False
+
+            toc_placeholder_paragraph.paragraph_format.first_line_indent = Pt(0)
+            toc_placeholder_paragraph.paragraph_format.space_before = Pt(0)
+            toc_placeholder_paragraph.paragraph_format.space_after = Pt(0)
+
+            ensure_first_main_chapter_starts_new_section(document)
+            add_page_numbers_from_chapter(document)
+
+            save_document_with_retry(document, docx_path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.3)
+
+    if last_error is not None:
+        raise last_error
 
 
 def insert_toc_section_with_office(docx_path: Path) -> None:
@@ -1435,9 +1732,10 @@ def refresh_page_numbers(docx_path: Path) -> None:
         try:
             document = Document(docx_path)
             remove_extra_front_matter_section_breaks(document)
+            ensure_first_main_chapter_starts_new_section(document)
             add_page_numbers_from_chapter(document)
             normalize_toc_region(document)
-            document.save(docx_path)
+            save_document_with_retry(document, docx_path)
             return
         except PermissionError as exc:
             last_error = exc
@@ -1601,7 +1899,7 @@ def postprocess_docx(
 
     add_page_numbers_from_chapter(document)
     normalize_toc_region(document)
-    document.save(docx_path)
+    save_document_with_retry(document, docx_path)
 
 
 def collect_markdown_files(input_root: Path) -> list[Path]:
@@ -1655,6 +1953,7 @@ def merge_docx_files(
     output_path: Path,
     image_options: ImageSizingOptions,
     table_options: TableSizingOptions,
+    cover_image_path: Path | None = None,
 ) -> None:
     if not docx_files:
         raise ValueError("No DOCX files were generated; nothing to merge.")
@@ -1672,9 +1971,18 @@ def merge_docx_files(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"[merge] saving composed document to {output_path}", flush=True)
-    composer.save(str(output_path))
+    temp_output_path = output_path.with_name(
+        f"{output_path.stem}.__compose__{output_path.suffix}"
+    )
+    composer.save(str(temp_output_path))
+    replace_file_with_retry(temp_output_path, output_path)
     print("[merge] postprocessing merged docx", flush=True)
     postprocess_docx(output_path, image_options, table_options)
+    print("[merge] preparing cover/front-matter sections", flush=True)
+    prepare_cover_and_front_matter_sections(output_path)
+    if cover_image_path is not None:
+        print("[merge] inserting cover image with Office/WPS", flush=True)
+        insert_cover_image_with_office(output_path, cover_image_path)
     print("[merge] inserting TOC scaffold", flush=True)
     insert_toc_scaffold(output_path)
     print("[merge] generating TOC with Office/WPS", flush=True)
@@ -1719,6 +2027,17 @@ def main() -> int:
         output_dir = args.output_dir.resolve()
     merged_output = output_dir / args.output_name
     intermediate_dir = output_dir / "intermediate"
+    cover_image_path = find_cover_image(input_root)
+    if cover_image_path is None:
+        raise FileNotFoundError(
+            f"Cover image does not exist: {input_root / COVER_IMAGE_NAME}"
+        )
+
+    author_bio_markdown = find_author_bio_markdown(input_root)
+    if author_bio_markdown is None:
+        raise FileNotFoundError(
+            f"Author bio markdown does not exist: {input_root / AUTHOR_BIO_DIR_NAME / AUTHOR_BIO_MD_NAME}"
+        )
 
     if not input_root.exists() or not input_root.is_dir():
         raise FileNotFoundError(
@@ -1731,13 +2050,30 @@ def main() -> int:
 
     ensure_reference_doc(reference_doc)
 
-    markdown_files = collect_markdown_files(input_root)
+    markdown_files = [
+        path
+        for path in collect_markdown_files(input_root)
+        if path.relative_to(input_root).parts[0] != AUTHOR_BIO_DIR_NAME
+    ]
     if not markdown_files:
         raise FileNotFoundError(
             f"No markdown files found under child folders of: {input_root}"
         )
 
     generated_docx_files: list[tuple[str, Path]] = []
+
+    author_bio_output_path = intermediate_dir / build_output_name(
+        author_bio_markdown, input_root
+    )
+    print(f"[pandoc] {author_bio_markdown} -> {author_bio_output_path}", flush=True)
+    run_pandoc(
+        author_bio_markdown, author_bio_output_path, defaults_path, reference_doc
+    )
+    print(f"[postprocess] {author_bio_output_path}", flush=True)
+    postprocess_docx(author_bio_output_path, image_options, table_options)
+    print(f"[postprocess-done] {author_bio_output_path}", flush=True)
+    generated_docx_files.append((AUTHOR_BIO_DIR_NAME, author_bio_output_path))
+
     for markdown_path in markdown_files:
         chapter_key = markdown_path.relative_to(input_root).parts[0]
         output_path = intermediate_dir / build_output_name(markdown_path, input_root)
@@ -1749,7 +2085,13 @@ def main() -> int:
         generated_docx_files.append((chapter_key, output_path))
 
     print("[main] starting merged document assembly", flush=True)
-    merge_docx_files(generated_docx_files, merged_output, image_options, table_options)
+    merge_docx_files(
+        generated_docx_files,
+        merged_output,
+        image_options,
+        table_options,
+        cover_image_path=cover_image_path,
+    )
     print(f"[merged] {merged_output}")
 
     if not args.keep_intermediate:
