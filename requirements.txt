@@ -1,6 +1,7 @@
 ﻿regex
 requests
 loguru
+pillow
 pyyaml
 python-docx
 docxcompose
