@@ -4,3 +4,4 @@ loguru
 pyyaml
 python-docx
 docxcompose
+pywin32

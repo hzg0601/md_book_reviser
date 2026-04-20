@@ -48,6 +48,7 @@ TABLE_WIDTH_PORTION = 0.95
 MIN_TABLE_COLUMN_WIDTH_CM = 1.8
 DEFAULT_TABLE_OVERFLOW_THRESHOLD = 1.12
 DEFAULT_TABLE_MIN_FONT_SIZE = 9.0
+CAPTION_FONT_SIZE = 9
 EQUATION_NUMBER_COLUMN_RATIO = 0.14
 EQUATION_LAYOUT_MARK = "EquationLayout"
 TOC_TITLE = "目录"
@@ -339,11 +340,13 @@ def chapter_sort_key(path: Path) -> tuple[int, int, str]:
 
 
 def set_run_fonts(
-    run, latin_font: str = "Times New Roman", east_asia_font: str = "宋体"
+    run, latin_font: str | None = None, east_asia_font: str | None = None
 ) -> None:
-    run.font.name = latin_font
-    run_properties = run._element.get_or_add_rPr()
-    run_properties.rFonts.set(qn("w:eastAsia"), east_asia_font)
+    if latin_font:
+        run.font.name = latin_font
+    if east_asia_font:
+        run_properties = run._element.get_or_add_rPr()
+        run_properties.rFonts.set(qn("w:eastAsia"), east_asia_font)
     run.font.color.rgb = RGBColor(0, 0, 0)
 
 
@@ -743,11 +746,6 @@ def build_right_aligned_label_paragraph(label: str):
 
     run = OxmlElement("w:r")
     run_properties = OxmlElement("w:rPr")
-    fonts = OxmlElement("w:rFonts")
-    fonts.set(qn("w:ascii"), "Times New Roman")
-    fonts.set(qn("w:hAnsi"), "Times New Roman")
-    fonts.set(qn("w:eastAsia"), "宋体")
-    run_properties.append(fonts)
 
     size = OxmlElement("w:sz")
     size.set(qn("w:val"), str(BODY_FONT_SIZE * 2))
@@ -932,6 +930,12 @@ def apply_caption_paragraph_format(paragraph) -> None:
     paragraph_format.space_before = Pt(6)
     paragraph_format.space_after = Pt(6)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    for run in paragraph.runs:
+        set_run_fonts(run, latin_font="SimHei", east_asia_font="黑体")
+        run.font.size = Pt(CAPTION_FONT_SIZE)
+        run.font.bold = False
+        run.font.italic = False
 
 
 def contains_drawing(paragraph) -> bool:
@@ -1177,11 +1181,7 @@ def normalize_toc_region(document: Document) -> None:
         title_paragraph.style = document.styles["Heading 1"]
     except KeyError:
         pass
-    apply_heading_paragraph_format(title_paragraph)
     clear_paragraph_borders(title_paragraph)
-    for run in title_paragraph.runs:
-        set_run_fonts(run)
-        run.font.italic = False
 
     for paragraph in document.paragraphs[title_index + 1 :]:
         text = paragraph.text.strip()
@@ -1194,14 +1194,12 @@ def normalize_toc_region(document: Document) -> None:
             break
 
         clear_paragraph_borders(paragraph)
-        if style_name.startswith("toc"):
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.underline = False
-                run.font.italic = False
 
 
 def ensure_reference_doc(reference_doc: Path) -> None:
+    if reference_doc.exists():
+        return
+
     reference_doc.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
 
@@ -1658,11 +1656,7 @@ def insert_toc_scaffold(docx_path: Path) -> None:
                 TOC_TITLE, style="Heading 1"
             )
 
-            apply_heading_paragraph_format(title_paragraph)
             clear_paragraph_borders(title_paragraph)
-            for run in title_paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
 
             toc_placeholder_paragraph.paragraph_format.first_line_indent = Pt(0)
             toc_placeholder_paragraph.paragraph_format.space_before = Pt(0)
@@ -1762,7 +1756,6 @@ def postprocess_docx(
     document = Document(docx_path)
 
     configure_document_layout(document)
-    configure_document_styles(document)
     normalize_reference_section_lists(document)
     remove_extra_front_matter_section_breaks(document)
     scale_inline_shapes(document, image_options)
@@ -1778,25 +1771,18 @@ def postprocess_docx(
 
         if is_reference_section_heading(paragraph):
             in_reference_section = True
-            apply_heading_paragraph_format(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
 
         if is_heading(paragraph):
             in_reference_section = False
-            apply_heading_paragraph_format(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
 
         if is_caption(paragraph):
+            try:
+                paragraph.style = document.styles["Caption"]
+            except KeyError:
+                pass
             apply_caption_paragraph_format(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
 
         if contains_drawing(paragraph):
@@ -1809,18 +1795,8 @@ def postprocess_docx(
             continue
 
         if is_reference_section_entry(paragraph, in_reference_section):
-            apply_reference_entry_paragraph_format(paragraph)
             strip_leading_whitespace_runs(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
-
-        apply_body_paragraph_format(paragraph)
-
-        for run in paragraph.runs:
-            set_run_fonts(run)
-            run.font.italic = False
 
     for paragraph in iter_paragraphs(document):
         if paragraph._element in body_paragraph_elements:
@@ -1830,17 +1806,14 @@ def postprocess_docx(
             continue
 
         if is_heading(paragraph):
-            apply_heading_paragraph_format(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
 
         if is_caption(paragraph):
+            try:
+                paragraph.style = document.styles["Caption"]
+            except KeyError:
+                pass
             apply_caption_paragraph_format(paragraph)
-            for run in paragraph.runs:
-                set_run_fonts(run)
-                run.font.italic = False
             continue
 
         if contains_drawing(paragraph):
@@ -1851,12 +1824,6 @@ def postprocess_docx(
             for run in paragraph.runs:
                 set_run_fonts(run)
             continue
-
-        apply_body_paragraph_format(paragraph)
-
-        for run in paragraph.runs:
-            set_run_fonts(run)
-            run.font.italic = False
 
     convert_equation_numbers_to_right_aligned_layout(document, base_section)
 
