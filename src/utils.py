@@ -30,6 +30,7 @@ VLM_API_KEY = _cfg["VLM_API_KEY"]
 BOCHA_API_KEY = _cfg["BOCHA_API_KEY"]
 MD_BOOK_PATH = _cfg["MD_BOOK_PATH"]
 MAX_CHARS_PER_CHUNK = _cfg.get("MAX_CHARS_PER_CHUNK", 28000)  # 默认每块约16k字符，兼容本地32K上下文模型
+REALESRGAN_PATH = _cfg["REALESRGAN_PATH"]
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 

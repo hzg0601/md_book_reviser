@@ -1,21 +1,16 @@
 ﻿"""
+一、需求：
 1. 低像素图片超分辨率；
 2. 英文说明文字翻译为中文；
 3. 图中含有Figure 1、Algorithm 1等字眼的图片处理；
 
-一、需求可行性评估与调整
-（1）. 深度超分辨率算法（如ESRGAN）当前仓库不可直接落地，因为缺少模型权重和推理依赖；
-（2）. 当前版本提供Lanczos插值放大，作为可执行的最小可用方案；
-（3）. 英文说明文字翻译与索引字样删除依赖当前VLM能力，但必须要求VLM返回结构化JSON与bbox；
-（4）. 图片编辑由pillow在本地完成，VLM仅负责识别、翻译和定位；
-（5）. 因VLM bbox为近似定位，复杂背景图片的处理效果需要人工抽检。
-
 二、低像素图片超分辨率
 （1）. 读取chapter路径下的所有图片；
-（2）. 计算每张图片的分辨率，如果最短边像素值小于阈值（如300像素），则将其放入一个列表中；
-（3）. 针对列表中的低分辨率图片，进行超分辨率处理，提供关键词选择不同的超分辨率算法；
-（4）. 当前版本支持Lanczos 插值算法，生成高分辨率版本；
-（5）. 将处理后的高分辨率图片保存回原定目录下，命名方式添加super-resolution-算法名后缀以区分；
+（2）. 计算每张图片的分辨率，如果图片宽度小于2480，则将其放入一个列表中；
+（3）. 针对列表中的低分辨率图片，进行超分辨率处理，保证图片宽度大于2480，
+       提供关键词选择不同的超分辨率算法: 
+       lanczos（基于PIL库的Lanczos重采样算法）和realesrgan（基于Real-ESRGAN算法的超分辨率处理）；
+（4）. 将处理后的高分辨率图片保存回原定目录下，命名方式添加super-resolution后缀以区分；
 
 三、英文说明文字翻译为中文
 （1）. 读取chapter路径下的所有图片；
@@ -35,9 +30,11 @@
 import json
 import os
 import re
+import subprocess
 import sys
-from typing import Iterable
-
+from concurrent.futures import ThreadPoolExecutor
+from math import ceil
+import requests
 from PIL import Image, ImageDraw, ImageFont, ImageStat
 
 PROJECT_ROOT = os.path.dirname(
@@ -46,15 +43,14 @@ PROJECT_ROOT = os.path.dirname(
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.utils import MD_BOOK_PATH, chat_vlm, logger
+from src.utils import MD_BOOK_PATH, REALESRGAN_PATH,chat_vlm, logger
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
-LOW_RESOLUTION_THRESHOLD = 1020
-DEFAULT_UPSCALE_FACTOR = 2
+MIN_IMAGE_WIDTH = 2480
 CAPTION_SUFFIX = "notes-translation"
 INDEX_REMOVE_SUFFIX = "index-remove"
-UPSCALE_SUFFIX_PREFIX = "super-resolution"
+UPSCALE_SUFFIX_PREFIX = "" # 设置为"",直接替换原图
 CAPTION_FONT_SIZE_MIN = 10
 CAPTION_FONT_SIZE_MAX = 32
 CAPTION_PADDING = 4
@@ -75,7 +71,7 @@ def _iter_image_files(chapter_path):
 
 def _build_output_path(image_path, suffix):
     base, ext = os.path.splitext(image_path)
-    return f"{base}-{suffix}{ext}"
+    return f"{base}{suffix}{ext}"
 
 
 def _extract_json_object(response):
@@ -353,41 +349,90 @@ def _remove_index_labels_in_image(img_path, output_path):
     return True
 
 
+def realesrgan_resize(
+    input_path,
+    output_path,
+    scale_factor=2,
+    portable_executable=REALESRGAN_PATH,
+    ):
+    """
+    使用Real-ESRGAN算法对输入图片进行超分辨率处理，并将结果保存到输出路径。
+    该函数假设已经安装并配置好Real-ESRGAN的推理环境。
+    """
+    command = [
+        portable_executable,
+        "-i",
+        input_path,
+        "-o",
+        output_path,
+        "-s",
+        str(scale_factor),
+    ]
+    subprocess.run(command, check=True)
+    logger.info(
+        f"已使用Real-ESRGAN对图片进行超分辨率处理: {input_path} -> {output_path}"
+    )
+
+def lanczos_resize(
+        input_path, 
+        output_path, 
+        scale_factor=2
+        ):
+    """根据目标宽度调整图片大小，保持宽高比"""
+    with Image.open(input_path) as image:
+        width, height = image.size
+        target_width = max(1, int(width * scale_factor + 0.9999))
+        target_height = max(1, int(height * scale_factor + 0.9999))
+        resized_image = image.resize((target_width, target_height), resample=Image.LANCZOS)
+        resized_image.save(output_path)
+    logger.info(f"已使用Lanczos算法对图片进行超分辨率处理: {output_path}")
+
 def image_super_resolution(
     chapter_path,
-    threshold=LOW_RESOLUTION_THRESHOLD,
-    method="lanczos",
-    scale_factor=DEFAULT_UPSCALE_FACTOR,
+    min_width=MIN_IMAGE_WIDTH,
+    method="lanczos"
 ):
     """
     读取章节目录下的图片，对低分辨率图片进行超分辨率处理。
-    当前实现支持lanczos；若传入其他算法名，仅记录警告并跳过。
+    当图片宽度小于 min_width 时触发超分。
+    输出图片将按原始宽高比放大，并保证宽度不小于 min_width。
+    当前支持 lanczos 与 realesrgan。
     """
-    if method.lower() != "lanczos":
-        logger.warning(f"当前仅支持lanczos放大，暂不支持: {method}")
+    normalized_method = method.lower()
+    if normalized_method not in {"lanczos", "realesrgan"}:
+        logger.warning(f"当前暂不支持的超分辨率方法: {method}")
         return
-
+    image_list = []
     for img_path in _iter_image_files(chapter_path):
-        try:
-            with Image.open(img_path) as image:
-                width, height = image.size
-                if min(width, height) >= threshold:
-                    continue
 
-                rgb_image = image.convert("RGB")
-                enlarged = rgb_image.resize(
-                    (width * scale_factor, height * scale_factor),
-                    Image.Resampling.LANCZOS,
-                )
-                output_path = _build_output_path(
-                    img_path, f"{UPSCALE_SUFFIX_PREFIX}-{method.lower()}"
-                )
-                enlarged.save(output_path)
-                logger.info(f"已放大低分辨率图片: {img_path} -> {output_path}")
-        except Exception as exc:
-            logger.error(f"图片超分辨率处理失败: {img_path}, error={exc}")
+        with Image.open(img_path) as image:
+            width, height = image.size
+            if width >= min_width:
+                continue
 
-
+        output_path = _build_output_path(
+            img_path,
+            f"{UPSCALE_SUFFIX_PREFIX}",
+        )
+        # 确定的需要放大的比例，最多放大4倍
+        scale_factor = min(4, ceil(min_width / width))
+        # 将图片路径、输出路径和放大倍数元组放入列表
+        image_list.append((img_path, output_path, scale_factor))
+    # 用多线程池并行处理图片超分辨率
+    process_method = (realesrgan_resize 
+                      if normalized_method == "realesrgan" 
+                      else lanczos_resize)
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(process_method, img_path, output_path, scale_factor)
+            for img_path, output_path, scale_factor in image_list
+        ]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:
+                logger.error(f"图片超分辨率处理失败: {exc}")
 def image_caption_translate(chapter_path):
     """
     读取章节目录下的图片，识别并翻译图片中的英文图注/表注/算法标题。
@@ -412,6 +457,19 @@ def image_index_remove(chapter_path):
             logger.error(f"图片索引字样删除失败: {img_path}, error={exc}")
 
 
+def batch_delete_images(chapter_path, image_suffix="super-resolution"):
+    """
+    根据图片的后缀批量删除图片
+    """
+    for img_path in _iter_image_files(chapter_path):
+        if image_suffix in img_path:
+            try:
+                os.remove(img_path)
+                logger.info(f"已删除图片: {img_path}")
+            except Exception as exc:
+                logger.error(f"图片删除失败: {img_path}, error={exc}")
+
+
 if __name__ == "__main__":
     for chapter_dir in os.listdir(MD_BOOK_PATH):
         chapter_path = os.path.join(MD_BOOK_PATH, chapter_dir)
@@ -421,6 +479,7 @@ if __name__ == "__main__":
             continue
 
         logger.info(f"Processing chapter: {chapter_dir}")
-        # image_super_resolution(chapter_path, method="lanczos")
+        # batch_delete_images(chapter_path,image_suffix="-.png")
+        image_super_resolution(chapter_path, method="realesrgan")
         # image_caption_translate(chapter_path)
-        # image_index_remove(chapter_path)
+    # image_index_remove(chapter_path)
