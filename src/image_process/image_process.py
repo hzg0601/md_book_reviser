@@ -8,7 +8,7 @@
 （1）. 读取chapter路径下的所有图片；
 （2）. 计算每张图片的分辨率，如果图片宽度小于2480，则将其放入一个列表中；
 （3）. 针对列表中的低分辨率图片，进行超分辨率处理，保证图片宽度大于2480，
-       提供关键词选择不同的超分辨率算法: 
+       提供关键词选择不同的超分辨率算法:
        lanczos（基于PIL库的Lanczos重采样算法）和realesrgan（基于Real-ESRGAN算法的超分辨率处理）；
 （4）. 将处理后的高分辨率图片保存回原定目录下，命名方式添加super-resolution后缀以区分；
 
@@ -43,14 +43,14 @@ PROJECT_ROOT = os.path.dirname(
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.utils import MD_BOOK_PATH, REALESRGAN_PATH,chat_vlm, logger
+from src.utils import MD_BOOK_PATH, REALESRGAN_PATH, chat_vlm, logger
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 MIN_IMAGE_WIDTH = 2480
 CAPTION_SUFFIX = "notes-translation"
 INDEX_REMOVE_SUFFIX = "index-remove"
-UPSCALE_SUFFIX_PREFIX = "" # 设置为"",直接替换原图
+UPSCALE_SUFFIX_PREFIX = "super-resolution"  # 设置为"",直接替换原图
 CAPTION_FONT_SIZE_MIN = 10
 CAPTION_FONT_SIZE_MAX = 32
 CAPTION_PADDING = 4
@@ -59,6 +59,14 @@ FONT_CANDIDATES = (
     r"C:\Windows\Fonts\simhei.ttf",
     r"C:\Windows\Fonts\msyh.ttc",
     r"C:\Windows\Fonts\simsun.ttc",
+)
+INDEX_LABEL_RE = re.compile(
+    r"^(?:figure|fig\.?|table|tab\.?|algorithm|alg\.?|图|表|算法)\s*[:：.]?\s*\d+(?:[.\-]\d+)*$",
+    re.IGNORECASE,
+)
+INDEX_LABEL_PREFIX_RE = re.compile(
+    r"((?:figure|fig\.?|table|tab\.?|algorithm|alg\.?|图|表|算法)\s*[:：.]?\s*\d+(?:[.\-]\d+)*)",
+    re.IGNORECASE,
 )
 
 
@@ -74,32 +82,97 @@ def _build_output_path(image_path, suffix):
     return f"{base}{suffix}{ext}"
 
 
-def _extract_json_object(response):
+def _extract_json_value(response):
     if not response:
         return None
     response = response.strip()
     try:
-        parsed = json.loads(response)
-        return parsed if isinstance(parsed, dict) else None
+        return json.loads(response)
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", response, re.DOTALL)
+    for pattern in (r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", r"(\{.*\}|\[.*\])"):
+        match = re.search(pattern, response, re.DOTALL)
+        if not match:
+            continue
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _extract_json_object(response):
+    parsed = _extract_json_value(response)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _normalize_index_label_text(text):
+    normalized = re.sub(r"\s+", " ", str(text or "").strip())
+    return normalized.rstrip("，,；;：:.。")
+
+
+def _extract_index_label_text(text):
+    normalized = _normalize_index_label_text(text)
+    if not normalized:
+        return ""
+    if INDEX_LABEL_RE.fullmatch(normalized):
+        return normalized
+
+    match = INDEX_LABEL_PREFIX_RE.search(normalized)
     if not match:
+        return ""
+
+    candidate = _normalize_index_label_text(match.group(1))
+    if INDEX_LABEL_RE.fullmatch(candidate):
+        return candidate
+    return ""
+
+
+def _is_index_label_text(text):
+    return bool(_extract_index_label_text(text))
+
+
+def _collect_bbox_numbers(raw_bbox):
+    if isinstance(raw_bbox, dict):
+        keys = {key.lower(): value for key, value in raw_bbox.items()}
+        if all(key in keys for key in ("x1", "y1", "x2", "y2")):
+            return [keys["x1"], keys["y1"], keys["x2"], keys["y2"]]
+        if all(key in keys for key in ("left", "top", "right", "bottom")):
+            return [keys["left"], keys["top"], keys["right"], keys["bottom"]]
         return None
 
-    try:
-        parsed = json.loads(match.group(0))
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
+    if not isinstance(raw_bbox, (list, tuple)) or not raw_bbox:
         return None
+
+    if len(raw_bbox) == 4 and all(
+        not isinstance(value, (list, tuple, dict)) for value in raw_bbox
+    ):
+        return list(raw_bbox)
+
+    points = []
+    for point in raw_bbox:
+        if isinstance(point, dict):
+            point_keys = {key.lower(): value for key, value in point.items()}
+            if all(key in point_keys for key in ("x", "y")):
+                points.append((point_keys["x"], point_keys["y"]))
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            points.append((point[0], point[1]))
+
+    if not points:
+        return None
+
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def _build_bbox(raw_bbox, image_size):
-    if not isinstance(raw_bbox, list) or len(raw_bbox) != 4:
+    bbox_numbers = _collect_bbox_numbers(raw_bbox)
+    if not bbox_numbers:
         return None
     try:
-        x1, y1, x2, y2 = [int(round(float(value))) for value in raw_bbox]
+        x1, y1, x2, y2 = [int(round(float(value))) for value in bbox_numbers]
     except (TypeError, ValueError):
         return None
 
@@ -111,9 +184,33 @@ def _build_bbox(raw_bbox, image_size):
     return (x1, y1, x2, y2)
 
 
+def _sample_region_color(region):
+    if region.width == 0 or region.height == 0:
+        return None
+    mean = ImageStat.Stat(region).mean
+    return tuple(int(round(value)) for value in mean[:3])
+
+
+def _sample_left_fill_color(image, bbox):
+    x1, y1, x2, y2 = bbox
+    strip_width = min(8, x1)
+    if strip_width <= 0:
+        return None
+
+    left = max(0, x1 - strip_width)
+    top = max(0, y1)
+    right = x1
+    bottom = min(image.size[1], y2)
+    return _sample_region_color(image.crop((left, top, right, bottom)))
+
+
 def _sample_fill_color(image, bbox):
     width, height = image.size
     x1, y1, x2, y2 = bbox
+    left_fill_color = _sample_left_fill_color(image, bbox)
+    if left_fill_color is not None:
+        return left_fill_color
+
     expand = 6
     left = max(0, x1 - expand)
     top = max(0, y1 - expand)
@@ -132,9 +229,9 @@ def _sample_fill_color(image, bbox):
 
     stats = []
     for region in border_regions:
-        if region.width == 0 or region.height == 0:
-            continue
-        stats.append(ImageStat.Stat(region).mean)
+        color = _sample_region_color(region)
+        if color is not None:
+            stats.append(color)
 
     if not stats:
         return DEFAULT_FILL_COLOR
@@ -282,25 +379,94 @@ def _detect_index_labels(img_path):
 若不存在，请返回：{"items": []}
 要求：
 1. 仅返回需要删除的短索引标签，不要包含整段caption；
-2. bbox 为该标签的紧致矩形框，使用像素坐标；
-3. 必须返回合法 JSON。
+2. 如果图中出现“Figure 1. Transformer architecture”这类整段caption，只返回其中的“Figure 1”，不要返回后面的标题；
+3. bbox 必须只框住短索引字符本身，紧贴文字外缘，不要包含后续标题、空白边距、横线、边框、箭头或其他图形；
+4. bbox 使用像素坐标 [x1, y1, x2, y2]，分别表示左上角和右下角，必须为整数；
+5. 如果同一短索引在图中出现多次，只返回实际需要擦除的那一个；
+6. 必须返回合法 JSON。
 """.strip()
 
-    result = chat_vlm(prompt=prompt, img_path=img_path)
-    payload = _extract_json_object(result)
-    if not payload:
+    ocr_fallback_prompt = """
+请对这张图片做 OCR，只提取看起来像图、表、算法短索引的文本块，例如：
+- Figure 1
+- Figure 1.1
+- Table 2
+- Algorithm 3
+- 图1
+- 表2
+- 算法3
+
+请只返回一个 JSON 对象，不要输出任何额外文字：
+{
+  "items": [
+    {"text": "Algorithm 1", "bbox": [x1, y1, x2, y2]}
+  ]
+}
+
+要求：
+1. 只返回短索引本身，不要返回后面的标题或正文；
+2. 如果识别到的是整段文本，请仅截取其中的短索引部分，例如从“Algorithm 1 FlashAttention”中只返回“Algorithm 1”；
+3. bbox 必须精确覆盖短索引文字本身，左边界贴住首字符，右边界贴住末字符，不要包含后续标题和空白；
+4. bbox 使用像素坐标 [x1, y1, x2, y2]，必须为整数；
+5. 若不存在，返回：{"items": []}
+6. 必须返回合法 JSON。
+""".strip()
+
+    payload = _extract_json_value(chat_vlm(prompt=prompt, img_path=img_path))
+    items = _parse_index_label_items(payload)
+    if items:
+        return items
+
+    fallback_payload = _extract_json_value(
+        chat_vlm(prompt=ocr_fallback_prompt, img_path=img_path)
+    )
+    return _parse_index_label_items(fallback_payload)
+
+
+def _parse_index_label_items(payload):
+    if payload is None:
         return []
 
-    items = []
-    for item in payload.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("text", "")).strip()
-        bbox = item.get("bbox")
-        if not text or bbox is None:
-            continue
-        items.append({"text": text, "bbox": bbox})
-    return items
+    candidate_groups = []
+    if isinstance(payload, list):
+        candidate_groups.append(payload)
+    elif isinstance(payload, dict):
+        for key in ("items", "labels", "detections", "results", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidate_groups.append(value)
+        if not candidate_groups and payload.get("text") and payload.get("bbox"):
+            candidate_groups.append([payload])
+        for value in payload.values():
+            if isinstance(value, dict):
+                for key in ("items", "labels", "detections", "results", "data"):
+                    nested_value = value.get(key)
+                    if isinstance(nested_value, list):
+                        candidate_groups.append(nested_value)
+
+    best_items = {}
+    for group in candidate_groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            text = _extract_index_label_text(item.get("text", ""))
+            bbox = item.get("bbox") or item.get("box") or item.get("rect")
+            if not text or bbox is None:
+                continue
+            bbox_numbers = _collect_bbox_numbers(bbox)
+            if not bbox_numbers:
+                continue
+
+            area = max(1, float(bbox_numbers[2] - bbox_numbers[0])) * max(
+                1, float(bbox_numbers[3] - bbox_numbers[1])
+            )
+            previous = best_items.get(text)
+            if previous is None or area < previous["area"]:
+                best_items[text] = {"text": text, "bbox": bbox, "area": area}
+
+    return [
+        {"text": item["text"], "bbox": item["bbox"]} for item in best_items.values()
+    ]
 
 
 def _translate_caption_in_image(img_path, output_path):
@@ -327,7 +493,7 @@ def _translate_caption_in_image(img_path, output_path):
 def _remove_index_labels_in_image(img_path, output_path):
     detections = _detect_index_labels(img_path)
     if not detections:
-        logger.info(f"未检测到需要删除的索引标签: {img_path}")
+        # logger.info(f"未检测到需要删除的索引标签: {img_path}")
         return False
 
     with Image.open(img_path) as image:
@@ -354,43 +520,59 @@ def realesrgan_resize(
     output_path,
     scale_factor=2,
     portable_executable=REALESRGAN_PATH,
-    ):
+):
     """
     使用Real-ESRGAN算法对输入图片进行超分辨率处理，并将结果保存到输出路径。
     该函数假设已经安装并配置好Real-ESRGAN的推理环境。
     """
+    # Real-ESRGAN会自动将.jpg输出为.jpg.png，这里先输出到临时文件，再转为.jpg
+    base, ext = os.path.splitext(output_path)
+    temp_output = output_path
+    if ext.lower() != ".png":
+        temp_output = output_path + ".png"
+
     command = [
         portable_executable,
         "-i",
         input_path,
         "-o",
-        output_path,
+        temp_output,
         "-s",
         str(scale_factor),
     ]
     subprocess.run(command, check=True)
+
+    # 如果输出为.jpg.png，转为.jpg并删除临时文件
+    if temp_output != output_path and os.path.exists(temp_output):
+        from PIL import Image
+
+        with Image.open(temp_output) as img:
+            rgb_img = img.convert("RGB")
+            rgb_img.save(output_path, quality=100)
+        os.remove(temp_output)
     logger.info(
         f"已使用Real-ESRGAN对图片进行超分辨率处理: {input_path} -> {output_path}"
     )
 
-def lanczos_resize(
-        input_path, 
-        output_path, 
-        scale_factor=2
-        ):
+
+def lanczos_resize(input_path, output_path, scale_factor=2):
     """根据目标宽度调整图片大小，保持宽高比"""
     with Image.open(input_path) as image:
         width, height = image.size
         target_width = max(1, int(width * scale_factor + 0.9999))
         target_height = max(1, int(height * scale_factor + 0.9999))
-        resized_image = image.resize((target_width, target_height), resample=Image.LANCZOS)
+        resized_image = image.resize(
+            (target_width, target_height), resample=Image.LANCZOS
+        )
         resized_image.save(output_path)
     logger.info(f"已使用Lanczos算法对图片进行超分辨率处理: {output_path}")
 
+
 def image_super_resolution(
-    chapter_path,
-    min_width=MIN_IMAGE_WIDTH,
-    method="lanczos"
+    chapter_path, 
+    min_width=MIN_IMAGE_WIDTH, 
+    method="lanczos", 
+    overwrite_original=True
 ):
     """
     读取章节目录下的图片，对低分辨率图片进行超分辨率处理。
@@ -404,25 +586,21 @@ def image_super_resolution(
         return
     image_list = []
     for img_path in _iter_image_files(chapter_path):
-
         with Image.open(img_path) as image:
             width, height = image.size
             if width >= min_width:
                 continue
-
-        output_path = _build_output_path(
-            img_path,
-            f"{UPSCALE_SUFFIX_PREFIX}",
-        )
-        # 确定的需要放大的比例，最多放大4倍
+        if overwrite_original:
+            output_path = img_path  # 直接覆盖原图，或如需保留原图可自定义后缀
+        else:
+            output_path = _build_output_path(img_path, UPSCALE_SUFFIX_PREFIX)
         scale_factor = min(4, ceil(min_width / width))
-        # 将图片路径、输出路径和放大倍数元组放入列表
         image_list.append((img_path, output_path, scale_factor))
     # 用多线程池并行处理图片超分辨率
-    process_method = (realesrgan_resize 
-                      if normalized_method == "realesrgan" 
-                      else lanczos_resize)
-    
+    process_method = (
+        realesrgan_resize if normalized_method == "realesrgan" else lanczos_resize
+    )
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
             executor.submit(process_method, img_path, output_path, scale_factor)
@@ -433,24 +611,32 @@ def image_super_resolution(
                 future.result()
             except Exception as exc:
                 logger.error(f"图片超分辨率处理失败: {exc}")
-def image_caption_translate(chapter_path):
+
+
+def image_caption_translate(chapter_path,overwrite_original=False):
     """
     读取章节目录下的图片，识别并翻译图片中的英文图注/表注/算法标题。
     """
     for img_path in _iter_image_files(chapter_path):
-        output_path = _build_output_path(img_path, CAPTION_SUFFIX)
+        if overwrite_original:
+            output_path = img_path  # 直接覆盖原图，或如需保留原图可自定义后缀
+        else:
+            output_path = _build_output_path(img_path, CAPTION_SUFFIX)
         try:
             _translate_caption_in_image(img_path, output_path)
         except Exception as exc:
             logger.error(f"图片说明文字翻译失败: {img_path}, error={exc}")
 
 
-def image_index_remove(chapter_path):
+def image_index_remove(chapter_path, overwrite_original=False):
     """
     读取章节目录下的图片，删除图片中的Figure 1/Algorithm 1/图1/算法1等索引字样。
     """
     for img_path in _iter_image_files(chapter_path):
-        output_path = _build_output_path(img_path, INDEX_REMOVE_SUFFIX)
+        if overwrite_original:
+            output_path = img_path  # 直接覆盖原图，或如需保留原图可自定义后缀
+        else:
+            output_path = _build_output_path(img_path, INDEX_REMOVE_SUFFIX)
         try:
             _remove_index_labels_in_image(img_path, output_path)
         except Exception as exc:
@@ -477,9 +663,11 @@ if __name__ == "__main__":
             continue
         if chapter_dir.startswith(".") or chapter_dir == "intermediate":
             continue
-
+        # if "第二" not in chapter_dir:
+        #     continue
         logger.info(f"Processing chapter: {chapter_dir}")
-        # batch_delete_images(chapter_path,image_suffix="-.png")
-        image_super_resolution(chapter_path, method="realesrgan")
+        batch_delete_images(chapter_path, image_suffix=UPSCALE_SUFFIX_PREFIX)
+
         # image_caption_translate(chapter_path)
-    # image_index_remove(chapter_path)
+        # image_index_remove(chapter_path)
+        image_super_resolution(chapter_path, method="realesrgan")
