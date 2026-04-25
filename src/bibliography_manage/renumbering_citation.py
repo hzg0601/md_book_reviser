@@ -1,4 +1,4 @@
-﻿﻿import os
+import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -108,19 +108,21 @@ def is_duplicate(ref1, ref2, title_threshold=0.85, author_threshold=0.8, method=
         return True
 
     # 根据 method 选择匹配策略
-    if method == "vlm":
+    if method == "none":
+        return False
+    elif method == "vlm":
         return is_similar_by_vlm(ref1, ref2)
-    else:
+    elif method == "rule":
         return is_similar_by_rule(ref1, ref2, title_threshold, author_threshold)
 
 
-def deduplicate_references(ref_lines):
+def deduplicate_references(ref_lines, method="vlm"):
     """去重，保留首次出现的条目。"""
     unique = []
     for ref in ref_lines:
         dup = False
         for existing in unique:
-            if is_duplicate(ref, existing):
+            if is_duplicate(ref, existing, method=method):
                 dup = True
                 logger.info(f"  [去重] {ref.strip()[:90]}...")
                 break
@@ -211,14 +213,14 @@ def renumber_citations(file_path):
     )
 
     # Step 2: 去重
-    ref_lines = deduplicate_references(ref_lines)
+    ref_lines = deduplicate_references(ref_lines, method="vlm")
     removed = (original_count + (len(ref_lines) - original_count)) - len(
         ref_lines
     )  # wait this is just math: moved + original_count = len before deduplication
 
     # Actually let's just do:
     total_before_dedup = len(ref_lines)
-    ref_lines = deduplicate_references(ref_lines)
+    ref_lines = deduplicate_references(ref_lines, method="rule")
     removed = total_before_dedup - len(ref_lines)
     logger.info(f"Removed {removed} duplicates, {len(ref_lines)} remaining")
 

@@ -1,20 +1,19 @@
 """将各章的参考文献与引用合并为全书级输出。
-
 流程：
-1. 读取书籍根目录下，第x章节下的x。
-2. 合并所有章节的参考文献，去重并重新编号。
-3. 合并所有章节的相关链接，去重并重新编号。
-4. 在书籍根目录下，创建参考文献输出目录，并保存参考文献为markdown。
-5. 在书籍根目录下,创建相关链接输出目录,并保存相关链接为markdown。
+1. 读取书籍根目录下，所有第x章(x=一，二，...）下的“参考文献与引用”小节的条目，
+    其包含了参考文献、相关链接两个子小节；
+2. 读取完成后，删除各章的“参考文献与引用”小节；
+3. 合并所有章的参考文献条目，去重并重新编号；合并所有章的相关链接条目，去重并重新编号。
+4. 在书籍根目录下，创建'参考文献'文件夹；
+    在'参考文献'文件夹下创建'参考文献.md'文件；
+    在'参考文献.md'中增加'参考文献与引用链接'一级标题；
+    在'参考文献与引用链接'一级标题下，增加'参考文献'和'引用链接'二级标题；
+    将合并的参考文献条目放入参考文献二级标题下，将合并的相关链接条目，放入'引用链接'二级标题下
 """
-
 import os
 import sys
 import re
-import argparse
-from pathlib import Path
-from difflib import SequenceMatcher
-
+import shutil
 PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -22,339 +21,303 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.utils import logger, MD_BOOK_PATH
+from src.bibliography_manage.renumbering_citation import (
+    deduplicate_references,
+    sort_references,
+)
 
 
-def extract_ref_and_links_with_positions(content: str):
-    """从 citation.markdown 内容中提取参考文献和相关链接条目，并返回整个参考文献与引用部分的位置。
-    
+# ══════════════════════════════════════════════════════════════════
+#  一、章节目录发现
+# ══════════════════════════════════════════════════════════════════
+
+_CHAPTER_PATTERN = re.compile(r"^第[一二三四五六七八九十百千零0-9]+章")
+
+
+def _is_chapter_dir(name: str) -> bool:
+    """判断目录名是否为'第x章'格式。"""
+    return bool(_CHAPTER_PATTERN.match(name))
+
+
+def discover_chapters(book_path: str) -> list[str]:
+    """发现书籍根目录下的所有章节目录，按名称排序。
+
     Returns:
-        tuple: (references_list, links_list, section_start, section_end)
+        章节目录绝对路径列表
     """
-    references = []
-    links = []
-    section_start = -1
-    section_end = -1
-    
-    # 查找参考文献部分的起始位置
-    ref_pattern = re.compile(r"^###\s*参考文献\s*$", re.MULTILINE)
-    ref_match = ref_pattern.search(content)
-    
-    if ref_match:
-        section_start = ref_match.start()
-        rest = content[ref_match.end():]
-        # 找到下一个标题作为结束点（除了"相关链接"）
-        end_pos = len(rest)
-        heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-        for h in heading_pattern.finditer(rest):
-            title = h.group(1).strip()
-            if title != "相关链接":
-                end_pos = h.start()
-                break
-        
-        section_end = ref_match.end() + end_pos
-        ref_section = rest[:end_pos]
-        # 提取参考文献条目
-        for line in ref_section.split("\n"):
-            stripped = line.strip()
-            if not stripped or stripped == "### 相关链接":
-                continue
-            # 移除序号前缀
-            cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
-            cleaned = re.sub(r"^[-*]\s+", "", cleaned)
-            if cleaned:
-                references.append(cleaned)
-    
-    # 如果找到了参考文献部分，现在查找相关链接部分是否在其中
-    if section_start != -1:
-        # 检查相关链接是否在参考文献部分之后但在section_end之前
-        link_pattern = re.compile(r"^###\s*相关链接\s*$", re.MULTILINE)
-        search_area = content[section_start:section_end]
-        link_match = link_pattern.search(search_area)
-        if link_match:
-            # 相关链接已经在参考文献部分内，我们已经处理过了
-            # 需要重新解析链接部分以填充 links 列表，因为上面的逻辑只处理了 ref_section
-            # 上面的逻辑中，如果 "相关链接" 在 ref_section 之后，它会被排除在 ref_section 之外
-            # 但如果它在 section_end 之前，我们需要单独提取它
-            # 让我们重新定位链接部分在全文中的位置
-            link_match_global = link_pattern.search(content[section_start:section_end])
-            if link_match_global:
-                 actual_link_start = section_start + link_match_global.start()
-                 actual_link_end = section_start + link_match_global.end()
-                 
-                 # 提取链接内容直到 section_end 或下一个标题
-                 remaining_in_section = content[actual_link_end:section_end]
-                 end_pos_links = len(remaining_in_section)
-                 heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-                 for h in heading_pattern.finditer(remaining_in_section):
-                     end_pos_links = h.start()
-                     break
-                 
-                 link_section_content = remaining_in_section[:end_pos_links]
-                 for line in link_section_content.split("\n"):
-                     stripped = line.strip()
-                     if not stripped:
-                         continue
-                     cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
-                     cleaned = re.sub(r"^[-*]\s+", "", cleaned)
-                     if cleaned:
-                         links.append(cleaned)
-        else:
-            # 相关链接可能在参考文献部分之后，需要单独处理
-            link_match_global = link_pattern.search(content)
-            if link_match_global and link_match_global.start() > section_end:
-                # 相关链接在参考文献之后，扩展section_end
-                rest_after_refs = content[link_match_global.end():]
-                end_pos_links = len(rest_after_refs)
-                heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-                for h in heading_pattern.finditer(rest_after_refs):
-                    end_pos_links = h.start()
-                    break
-                
-                section_end = link_match_global.end() + end_pos_links
-                link_section = rest_after_refs[:end_pos_links]
-                # 提取相关链接条目
-                for line in link_section.split("\n"):
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    # 移除序号前缀
-                    cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
-                    cleaned = re.sub(r"^[-*]\s+", "", cleaned)
-                    if cleaned:
-                        links.append(cleaned)
-            elif link_match_global:
-                # 相关链接在参考文献之前或其他位置，需要单独提取
-                rest_after_links = content[link_match_global.end():]
-                end_pos_links = len(rest_after_links)
-                heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-                for h in heading_pattern.finditer(rest_after_links):
-                    end_pos_links = h.start()
-                    break
-                
-                link_section = rest_after_links[:end_pos_links]
-                # 提取相关链接条目
-                for line in link_section.split("\n"):
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    # 移除序号前缀
-                    cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
-                    cleaned = re.sub(r"^[-*]\s+", "", cleaned)
-                    if cleaned:
-                        links.append(cleaned)
+    if not os.path.isdir(book_path):
+        logger.error(f"书籍目录不存在: {book_path}")
+        return []
+
+    chapters = []
+    for name in sorted(os.listdir(book_path)):
+        full = os.path.join(book_path, name)
+        if os.path.isdir(full) and _is_chapter_dir(name):
+            chapters.append(full)
+
+    logger.info(f"共发现 {len(chapters)} 个章节目录")
+    return chapters
+
+
+# ══════════════════════════════════════════════════════════════════
+#  二、读取与删除各章的“参考文献与引用”小节
+# ══════════════════════════════════════════════════════════════════
+
+_REFERENCES_HEADING = "### 参考文献"
+_LINKS_HEADING = "### 相关链接"
+_CITATION_SECTION_HEADING = "## 参考文献与引用"
+
+
+def _find_citation_section_bounds(lines: list[str]) -> tuple[int, int]:
+    """在行列表中定位“参考文献与引用”一级/二级标题的边界。
+
+    匹配规则：
+    - 起始：行内容为 '## 参考文献与引用' 或 '# 参考文献与引用'
+    - 结束：下一个同级或更高级标题（## 或 #）的开始位置，或文件末尾
+
+    Returns:
+        (start_idx, end_idx) —— start_idx 为标题行索引，end_idx 为不包含的结束索引。
+        若未找到则返回 (-1, -1)。
+    """
+    start_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip() in ("## 参考文献与引用", "# 参考文献与引用"):
+            start_idx = i
+            break
+
+    if start_idx == -1:
+        return -1, -1
+
+    end_idx = len(lines)
+    for i in range(start_idx + 1, len(lines)):
+        if re.match(r"^#{1,2}\s+", lines[i]):
+            end_idx = i
+            break
+
+    return start_idx, end_idx
+
+
+def extract_entries(lines: list[str]) -> tuple[list[str], list[str]]:
+    """从“参考文献与引用”小节的行中提取参考文献条目和相关链接条目。
+
+    Returns:
+        (ref_entries, link_entries) —— 均为去掉序号前缀后的纯文本列表
+    """
+    ref_entries: list[str] = []
+    link_entries: list[str] = []
+
+    in_refs = False
+    in_links = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == _REFERENCES_HEADING:
+            in_refs = True
+            in_links = False
+            continue
+        if stripped == _LINKS_HEADING:
+            in_refs = False
+            in_links = True
+            continue
+
+        # 遇到下一个三级标题则退出当前区段
+        if re.match(r"^###\s+", stripped):
+            in_refs = False
+            in_links = False
+            continue
+
+        if in_refs or in_links:
+            m = re.match(r"^\d+\.\s+(.*)$", stripped)
+            if m:
+                text = m.group(1).strip()
+                if text:
+                    if in_refs:
+                        ref_entries.append(text)
+                    else:
+                        link_entries.append(text)
+
+    return ref_entries, link_entries
+
+
+def process_chapter(chapter_path: str) -> tuple[list[str], list[str]]:
+    """处理单个章节：读取并删除“参考文献与引用”小节，返回提取的条目。
+
+    遍历章节目录下的所有 .md / .markdown 文件，找到包含“参考文献与引用”
+    小节的文件进行处理。
+
+    Returns:
+        (ref_entries, link_entries)
+    """
+    all_ref_entries: list[str] = []
+    all_link_entries: list[str] = []
+
+    for fname in os.listdir(chapter_path):
+        if not fname.endswith(".md") and not fname.endswith(".markdown"):
+            continue
+
+        file_path = os.path.join(chapter_path, fname)
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        start_idx, end_idx = _find_citation_section_bounds(lines)
+        if start_idx == -1:
+            continue
+
+        section_lines = lines[start_idx:end_idx]
+        refs, links = extract_entries(section_lines)
+        all_ref_entries.extend(refs)
+        all_link_entries.extend(links)
+
+        # 删除该小节（保留标题行之前的换行，避免产生多余空行）
+        new_lines = lines[:start_idx]
+        # 若删除后上一行不是空行且后面还有内容，则补一个换行
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines.append("\n")
+        new_lines.extend(lines[end_idx:])
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        logger.info(
+            f"  [{fname}] 提取参考文献 {len(refs)} 条，相关链接 {len(links)} 条，"
+            f"已删除该小节"
+        )
+
+    return all_ref_entries, all_link_entries
+
+
+# ══════════════════════════════════════════════════════════════════
+#  三、去重与重新编号
+# ══════════════════════════════════════════════════════════════════
+
+
+def deduplicate_links(link_entries: list[str]) -> list[str]:
+    """对相关链接去重，按 URL 去重"""
+    unique: list[str] = []
+    seen_urls: set[str] = set()
+    seen_texts: set[str] = set()
+
+    for entry in link_entries:
+        url_match = re.search(r"(https?://[^\s)>\]]+)", entry)
+        if url_match:
+            url = url_match.group(1).rstrip(".,;")
+            if url not in seen_urls:
+                seen_urls.add(url)
+                unique.append(entry)
+
+    return unique
+
+
+def sort_links(link_entries: list[str]) -> list[str]:
+    """按条目首字符字母序排序相关链接。"""
+    return sorted(link_entries, key=lambda x: x.strip().lower())
+
+
+def renumber_entries(entries: list[str]) -> list[str]:
+    """为条目列表重新编号，返回带序号的行列表。"""
+    return [f"{i}. {entry}\n" for i, entry in enumerate(entries, 1)]
+
+
+# ══════════════════════════════════════════════════════════════════
+#  四、生成全书级参考文献文件
+# ══════════════════════════════════════════════════════════════════
+
+
+def build_global_bibliography(
+    ref_entries: list[str],
+    link_entries: list[str],
+    book_path: str,
+) -> str:
+    """在书籍根目录下创建'参考文献/参考文献.md'，写入合并后的条目。
+
+    Returns:
+        生成的文件路径
+    """
+    bib_dir = os.path.join(book_path, "参考文献")
+    os.makedirs(bib_dir, exist_ok=True)
+
+    bib_path = os.path.join(bib_dir, "参考文献.md")
+
+    lines: list[str] = []
+    lines.append("# 参考文献与引用链接\n")
+    lines.append("\n")
+
+    lines.append("## 参考文献\n")
+    lines.append("\n")
+    if ref_entries:
+        lines.extend(renumber_entries(ref_entries))
     else:
-        # 没有参考文献部分，只查找相关链接
-        link_pattern = re.compile(r"^###\s*相关链接\s*$", re.MULTILINE)
-        link_match = link_pattern.search(content)
-        if link_match:
-            section_start = link_match.start()
-            rest = content[link_match.end():]
-            end_pos = len(rest)
-            heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-            for h in heading_pattern.finditer(rest):
-                end_pos = h.start()
-                break
-            
-            section_end = link_match.end() + end_pos
-            link_section = rest[:end_pos]
-            # 提取相关链接条目
-            for line in link_section.split("\n"):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                # 移除序号前缀
-                cleaned = re.sub(r"^\[?\d+[.\])\s]*", "", stripped)
-                cleaned = re.sub(r"^[-*]\s+", "", cleaned)
-                if cleaned:
-                    links.append(cleaned)
-    
-    return references, links, section_start, section_end
+        lines.append("（无）\n")
+    lines.append("\n")
+
+    lines.append("## 引用链接\n")
+    lines.append("\n")
+    if link_entries:
+        lines.extend(renumber_entries(link_entries))
+    else:
+        lines.append("（无）\n")
+    lines.append("\n")
+
+    with open(bib_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    logger.info(f"已生成全书参考文献文件: {bib_path}")
+    return bib_path
 
 
-def is_similar_entry(entry1: str, entry2: str, threshold: float = 0.85) -> bool:
-    """判断两个条目是否相似（用于去重）。
-    
-    使用字符串相似度进行比较。
-    """
-    return SequenceMatcher(None, entry1.lower(), entry2.lower()).ratio() >= threshold
+# ══════════════════════════════════════════════════════════════════
+#  五、主流程
+# ══════════════════════════════════════════════════════════════════
 
 
-def deduplicate_entries(entries: list) -> list:
-    """对条目列表进行去重。
-    
+def merge_citations(book_path: str = None) -> str | None:
+    """执行全书参考文献合并流程。
+
     Args:
-        entries: 条目列表
-        
+        book_path: 书籍根目录路径，默认从 config.yaml 读取 MD_BOOK_PATH。
+
     Returns:
-        去重后的条目列表
+        生成的全书参考文献文件路径，若失败则返回 None。
     """
-    if not entries:
-        return []
-    
-    unique_entries = []
-    for entry in entries:
-        is_duplicate = False
-        for existing in unique_entries:
-            if is_similar_entry(entry, existing):
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_entries.append(entry)
-    
-    return unique_entries
+    if book_path is None:
+        book_path = MD_BOOK_PATH
 
+    chapters = discover_chapters(book_path)
+    if not chapters:
+        logger.warning("未发现任何章节目录，跳过合并")
+        return None
 
-def sort_references(references: list) -> list:
-    """对参考文献按作者姓氏排序。
-    
-    简单实现：按字符串排序
-    """
-    return sorted(references, key=lambda x: x.lower())
+    all_refs: list[str] = []
+    all_links: list[str] = []
 
+    for chapter_path in chapters:
+        chapter_name = os.path.basename(chapter_path)
+        logger.info(f"处理章节: {chapter_name}")
+        refs, links = process_chapter(chapter_path)
+        all_refs.extend(refs)
+        all_links.extend(links)
 
-def sort_links(links: list) -> list:
-    """对相关链接按条目首字符排序。
-    
-    简单实现：按字符串排序
-    """
-    return sorted(links, key=lambda x: x.lower())
-
-
-def merge_citations(book_root: str):
-    """合并所有章节的参考文献和相关链接。
-    
-    Args:
-        book_root: 书籍根目录路径
-    """
-    logger.info(f"开始合并参考文献，书籍根目录: {book_root}")
-    
-    # 查找所有章节目录
-    chapter_dirs = find_chapter_directories(book_root)
-    if not chapter_dirs:
-        logger.warning("未找到任何章节目录")
-        return
-    
-    logger.info(f"找到 {len(chapter_dirs)} 个章节目录: {chapter_dirs}")
-    
-    all_references = []
-    all_links = []
-    
-    # 读取每个章节的citation.markdown文件
-    for chapter_dir in chapter_dirs:
-        citation_path = os.path.join(chapter_dir, "citation.markdown")
-        if not os.path.exists(citation_path):
-            logger.warning(f"章节目录中未找到 citation.markdown: {chapter_dir}")
-            continue
-        
-        try:
-            with open(citation_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            references, links, section_start, section_end = extract_ref_and_links_with_positions(content)
-            all_references.extend(references)
-            all_links.extend(links)
-            
-            logger.info(f"从 {chapter_dir} 读取了 {len(references)} 条参考文献和 {len(links)} 条相关链接")
-            
-            # 删除该章节的'参考文献与引用'小节
-            if section_start != -1 and section_end != -1:
-                # 移除整个参考文献与引用部分
-                new_content = content[:section_start] + content[section_end:]
-                # 清理多余的空行
-                new_content = re.sub(r'\n\s*\n\s*\n', '\n\n', new_content)
-                
-                with open(citation_path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                logger.info(f"已删除 {chapter_dir} 中的'参考文献与引用'小节")
-            
-        except Exception as e:
-            logger.error(f"处理 {citation_path} 时出错: {e}")
-            continue
-    
-    if not all_references and not all_links:
-        logger.warning("未找到任何参考文献或相关链接")
-        return
-    
-    # 去重
-    unique_references = deduplicate_entries(all_references)
-    unique_links = deduplicate_entries(all_links)
-    
-    logger.info(f"去重后: {len(unique_references)} 条参考文献, {len(unique_links)} 条相关链接")
-    
-    # 排序
-    sorted_references = sort_references(unique_references)
-    sorted_links = sort_links(unique_links)
-    
-    # 创建输出目录 - 改为"参考文献"文件夹
-    output_dir = os.path.join(book_root, "参考文献")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 生成完整的参考文献.md文件，使用"参考文献"作为一级标题
-    full_citation_content = "# 参考文献\n\n"
-    if sorted_references:
-        full_citation_content += "## 学术文献\n\n"
-        for i, entry in enumerate(sorted_references, 1):
-            full_citation_content += f"{i}. {entry}\n"
-        full_citation_content += "\n"
-    
-    if sorted_links:
-        full_citation_content += "## 相关链接\n\n"
-        for i, entry in enumerate(sorted_links, 1):
-            full_citation_content += f"{i}. {entry}\n"
-        full_citation_content += "\n"
-    
-    # 保存为"参考文献.md"
-    full_output_path = os.path.join(output_dir, "参考文献.md")
-    with open(full_output_path, "w", encoding="utf-8") as f:
-        f.write(full_citation_content)
-    
-    logger.info(f"合并完成，输出文件: {full_output_path}")
-
-
-def find_chapter_directories(book_root: str) -> list:
-    """查找书籍根目录下的所有章节目录。
-    
-    章节目录通常以数字开头或包含"chapter"字样。
-    """
-    chapter_dirs = []
-    book_path = Path(book_root)
-    
-    if not book_path.exists():
-        logger.error(f"书籍根目录不存在: {book_root}")
-        return []
-    
-    # 查找可能的章节目录
-    for item in book_path.iterdir():
-        if item.is_dir():
-            # 章节目录通常以数字开头，或者名称中包含chapter
-            dir_name = item.name.lower()
-            if (dir_name.startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) or 
-                'chapter' in dir_name or 'chap' in dir_name):
-                chapter_dirs.append(str(item))
-    
-    # 如果没有找到符合命名规则的目录，尝试查找所有包含citation.markdown的目录
-    if not chapter_dirs:
-        for item in book_path.iterdir():
-            if item.is_dir():
-                citation_file = item / "citation.markdown"
-                if citation_file.exists():
-                    chapter_dirs.append(str(item))
-    
-    return sorted(chapter_dirs)
-
-
-def main():
-    """主函数，支持命令行调用。"""
-    parser = argparse.ArgumentParser(description="合并各章节的参考文献和相关链接")
-    parser.add_argument(
-        "--book-root",
-        default=MD_BOOK_PATH,
-        help=f"书籍根目录路径 (默认: {MD_BOOK_PATH})"
+    logger.info(
+        f"合并前总计: 参考文献 {len(all_refs)} 条，相关链接 {len(all_links)} 条"
     )
-    
-    args = parser.parse_args()
-    merge_citations(args.book_root)
+
+    # 去重
+    unique_refs = deduplicate_references(all_refs, method="vlm")
+    unique_links = deduplicate_links(all_links)
+
+    logger.info(
+        f"去重后: 参考文献 {len(unique_refs)} 条，相关链接 {len(unique_links)} 条"
+    )
+
+    # 排序
+    sorted_refs = sort_references(unique_refs)
+    sorted_links = sort_links(unique_links)
+
+    # 生成全书级文件
+    bib_path = build_global_bibliography(sorted_refs, sorted_links, book_path)
+    return bib_path
 
 
 if __name__ == "__main__":
-    main()
+    merge_citations(MD_BOOK_PATH)
+    logger.info("完成")
