@@ -489,7 +489,7 @@ def detect_ita_correspondence(chapter_path):
     # 3. 如果某个算法、图、表引用次数为1，则将其记录下来
     isolation_references = []
     for ref, count in reference_counts.items():
-        if count == 1:
+        if count != 2:
             isolation_references.append(ref)
     
     # Write to isolation_references.json in the chapter directory
@@ -508,5 +508,5 @@ if __name__ == "__main__":
         # if "第二" not in chapter and "第三" not in chapter:
         #     continue
         print(f"Processing chapter: {chapter}")
-        number_ite(chapter_path)
+        # number_ite(chapter_path)
         detect_ita_correspondence(chapter_path)
