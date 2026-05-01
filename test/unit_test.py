@@ -4,17 +4,18 @@ import os
 # 将项目根目录添加到 sys.path 中，解决跨目录导入问题
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from format_and_numbering.structure_unifier import img_unifier
-from format_and_numbering.formatter import remove_blank_in_equation, black2normal
+from src.format_and_numbering.structure_unifier import img_unifier
+from src.format_and_numbering.formatter import remove_blank_in_equation, black2normal
 from src.utils import logger,MD_BOOK_PATH
-from format_and_numbering.name_normalizer import img_name_normalizer, table_name_normalizer
-from bibliography_manage.bibliography_search_api import bibliography_search_pipeline
-from format_and_numbering.numbering import number_ite
-from bibliography_manage.citation_checker import citation_check_pipeline
-from bibliography_manage.renumbering_citation import chapter_renumber_pipeline
-from content_revising.content_reviser import batch_content_reviser
-from format_and_numbering.term_normalizer import batch_term_normalizer
-from md2docx.build_book_docx import main as build_book_docx_main
+from src.format_and_numbering.name_normalizer import img_name_normalizer, table_name_normalizer
+from src.bibliography_manage.bibliography_search_api import bibliography_search_pipeline
+from src.format_and_numbering.numbering import number_ite
+from src.bibliography_manage.citation_checker import citation_check_pipeline
+from src.bibliography_manage.renumbering_citation import chapter_renumber_pipeline
+from src.content_revising.content_reviser import batch_content_reviser
+from src.format_and_numbering.term_normalizer import batch_term_normalizer
+from src.md2docx.build_book_docx import main as build_book_docx_main
+from src.image_process.image_process import image_super_resolution
 md_book_path = MD_BOOK_PATH
 
 
@@ -40,6 +41,9 @@ def batch_chapter_process(md_book_path):
             # batch_content_reviser(chapter_path)
             # number_ite(chapter_path)
             # black2normal(chapter_path)
+            image_super_resolution(chapter_path, 
+                                   method="realesrgan",
+                                   overwrite_original=True)
             logger.info(f"处理文件夹 {chapter_path} 完成")
     # batch_term_normalizer(md_book_path)
     logger.info(f"处理文件夹 {md_book_path} 完成")

@@ -354,7 +354,7 @@ def numbering_algorithm(content, chapter_index):
 
     return "\n".join(lines)
 
-def translate_algorithm(content, chapter_path):
+def translate_algorithm(chapter_path):
     """
     将图像形式的算法转录为文本，并将译为中文。
     1. 检测markdown文本中插入的图片，如果图片格式中[]中的图片名以“算法”开头，则解析图片的地址，读取图片；
@@ -366,6 +366,10 @@ def translate_algorithm(content, chapter_path):
         翻译后的文本
         ```
     """
+    md_path = get_md_path(chapter_path)
+    content = chapter_reader(md_path)
+    if not content:
+        return
     lines = content.split("\n")
     new_lines = []
     
@@ -385,26 +389,65 @@ def translate_algorithm(content, chapter_path):
                 
                 if os.path.exists(img_full_path):
                     # Step 2: Call VLM to transcribe the image to text
-                    transcription_prompt = """
-                    请将这张图片中的算法伪代码完整地转录为文本格式。
-                    保持原有的缩进、换行和格式结构。
-                    如果包含数学公式，请使用LaTeX格式表示。
-                    只返回转录的文本内容，不要添加任何解释或其他内容。
+                    algo_name = alt.strip()
+
+                    sample_prompt = """
+                    $$
+                    \begin{array}{l}
+                    \textbf{算法1-1: Momentum优化器} \\
+                    \hline
+                    \textbf{Input: } \gamma \text{ (学习率)}, \theta_0 \text{ (参数)}, f(\theta) \text{ (目标函数)} \\
+                    \textbf{Parameters: } \lambda \text{ (权重衰减)}, \mu \text{ (动量)}, \tau \text{ (阻尼率)} \\
+                    \textbf{Initialize: } t = 0 \\
+                    \textbf{while } \text{not converged do} \\
+                    \quad t \leftarrow t + 1 \\
+                    \quad g_t \leftarrow \nabla_\theta f_t(\theta_{t-1}) \\
+                    \quad \textbf{if } \lambda \neq 0 \textbf{ then} \\
+                    \quad\quad g_t \leftarrow g_t + \lambda \theta_{t-1} \\
+                    \quad \textbf{end if} \\
+                    \quad \textbf{if } \mu \neq 0 \textbf{ then} \\
+                    \quad\quad \textbf{if } t > 1 \textbf{ then} \\
+                    \quad\quad\quad b_t \leftarrow \mu b_{t-1} + (1 - \tau) g_t \\
+                    \quad\quad \textbf{else} \\
+                    \quad\quad\quad b_t \leftarrow g_t \\
+                    \quad\quad \textbf{end if} \\
+                    \quad\quad \textbf{if } \text{nesterov} \textbf{ then} \\
+                    \quad\quad\quad g_t \leftarrow g_t + \mu b_t \\
+                    \quad\quad \textbf{else} \\
+                    \quad\quad\quad g_t \leftarrow b_t \\
+                    \quad\quad \textbf{end if} \\
+                    \quad \textbf{end if} \\
+                    \quad \theta_t \leftarrow \theta_{t-1} - \gamma g_t \\
+                    \textbf{end while} \\
+                    \textbf{Output: } \theta_t
+                    \end{array}
+                    $$"""
+                    transcription_prompt = f"""
+                    请将这张图片中的算法伪代码完整地转录下来。
+                    转录要求：
+                    1. 保持原有的缩进、换行和格式结构。
+                    2. 如果包含数学公式，请使用LaTeX格式表示。
+                    3. 只返回转录的文本内容，不要添加任何解释或其他内容。
+
+                    以下为一个示例：
+                    {sample_prompt}
                     """
-                    
+
                     transcribed_text = chat_vlm(prompt=transcription_prompt, img_path=img_full_path)
                     
                     if transcribed_text.strip():
                         # Step 3: Translate to Chinese while preserving formulas and technical terms
                         translation_prompt = f"""
-                        请将以下算法伪代码翻译成中文：
-                        {transcribed_text}
-                        
+                        请将以下算法伪代码翻译成中文，同时替换或添加算法名为{algo_name}：
+                        {transcribed_text}                        
                         翻译要求：
-                        1. 保留所有数学公式、变量名、函数名、类名等技术术语为英文原文
-                        2. 只翻译注释、描述性文字和控制结构的关键字（如if、else、for、while等可以翻译为中文）
+                        1. 保留所有数学公式、变量名、函数名、类名等技术术语、控制结构的关键字（如if、else、for、while等）为英文原文
+                        2. 只翻译注释、描述性文字、输入信息和非技术术语的部分为中文
                         3. 保持原有的代码结构和缩进
-                        4. 只返回翻译后的文本，不要添加任何其他内容
+                        4. 保证翻译后的算法名完整，包含算法编号和原有的描述性标题，例如“算法3-5 xxx”；
+                        5. 只返回翻译后的文本，不要添加任何其他内容;
+                        以下为一个示例：
+                        {sample_prompt}
                         """
                         
                         translated_text = chat_vlm(prompt=translation_prompt, text_content=transcribed_text)
@@ -412,13 +455,8 @@ def translate_algorithm(content, chapter_path):
                         if translated_text.strip():
                             # Step 4: Replace image with algorithm name and code block
                             # Extract algorithm name from alt text
-                            algo_name = alt.strip()
-                            
-                            # Add the algorithm name and code block
-                            new_lines.append(algo_name)
-                            new_lines.append("```")
                             new_lines.append(translated_text)
-                            new_lines.append("```")
+                            os.remove(img_full_path) # 删除图片
                         else:
                             # If translation fails, keep original image
                             new_lines.append(line)
@@ -437,9 +475,12 @@ def translate_algorithm(content, chapter_path):
             
         i += 1
     
-    return "\n".join(new_lines)
+    new_content = "\n".join(new_lines)
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
 
 def number_ite(chapter_path):
+
     """
     给algorithm、img、table、equation编号
 
@@ -457,7 +498,6 @@ def number_ite(chapter_path):
     content = numbering_img(content, chapter_index)
     content = numbering_table(content, chapter_index)
     content = numbering_equation(content, chapter_index)
-    content = translate_algorithm(content, chapter_path)
     # 4. 将编号后的字符串写回文件；
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -499,6 +539,7 @@ def detect_ita_correspondence(chapter_path):
 
 if __name__ == "__main__":
     from src.utils import MD_BOOK_PATH
+    logger.info(f"Starting numbering and formatting for chapters in {MD_BOOK_PATH}")
     for chapter in os.listdir(MD_BOOK_PATH):
         chapter_path = os.path.join(MD_BOOK_PATH, chapter)
         if not os.path.isdir(chapter_path):
@@ -507,6 +548,7 @@ if __name__ == "__main__":
             continue
         # if "第二" not in chapter and "第三" not in chapter:
         #     continue
-        print(f"Processing chapter: {chapter}")
+        logger.info(f"Processing chapter: {chapter}")
         # number_ite(chapter_path)
-        detect_ita_correspondence(chapter_path)
+        # detect_ita_correspondence(chapter_path)
+        translate_algorithm(chapter_path)
