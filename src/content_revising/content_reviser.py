@@ -12,10 +12,14 @@
 import os
 import sys
 import json
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 from src.utils import chat_vlm, logger, chapter_reader, get_md_path
 
-MAX_CHUNK_SIZE = 30000  # VLM输入内容的最大字符数限制
+MAX_CHUNK_SIZE = 20000  # VLM输入内容的最大字符数限制
 
 # ────────────── 各类问题的专用提示词 ──────────────
 TYPO_PROMPT = """
@@ -271,12 +275,13 @@ def filter_issues_report(raw_report: str) -> str:
     return filtered_report.strip()
 
 
-def generate_comprehensive_report(content: str) -> str:
+def generate_comprehensive_report(content: str, filter: bool = True) -> str:
     """
     生成经过过滤的综合问题报告。
 
     Args:
         content: 待审查的文本内容
+        filter: 是否对报告进行过滤
 
     Returns:
         str: 综合问题报告
@@ -291,7 +296,7 @@ def generate_comprehensive_report(content: str) -> str:
     merged_report = merge_issues_report(issues_by_type)
     
     # 3. 过滤报告，仅保留具体可修正的错误
-    final_report = filter_issues_report(merged_report)
+    final_report = filter_issues_report(merged_report) if filter and merged_report != "无问题" else merged_report
     
     return final_report
 
@@ -399,32 +404,25 @@ def batch_content_reviser(chapter_path: str):
 
     # 调用VLM服务进行分离式处理：先报告后修订
     revised_content = ""
-    issues_log = {}
+    issues_content = ""
     for idx, paragraph in enumerate(merged_paragraphs):
         logger.info(f"正在处理第 {idx+1}/{len(merged_paragraphs)} 段内容")
-        issues_report, revised_paragraph = content_reviser_separate(paragraph)
-        issues_log[paragraph] = issues_report
-        revised_content += revised_paragraph + "\n\n"
+        issues_report = generate_comprehensive_report(paragraph)
+        issues_content += issues_report + "\n\n" 
 
-    # 将识别到的问题写入 chapter_path 下的 issues.json文件
-    issues_path = os.path.join(os.path.dirname(md_path), "issues.json")
+    # 将识别到的问题写入 chapter_path 下的 issues.markdown文件
+    issues_path = os.path.join(os.path.dirname(md_path), "issues.markdown")
     with open(issues_path, "w", encoding="utf-8") as f:
-        json.dump(issues_log, f, ensure_ascii=False, indent=4)
-    
-    # 将修订后的内容写入 chapter_path 下的 revised.markdown 文件
-    revised_md_path = os.path.join(os.path.dirname(md_path), "revised.markdown")
-    with open(revised_md_path, "w", encoding="utf-8") as f:
-        f.write(revised_content)
-    
+        f.write(issues_content)    
     logger.info(f"问题记录已保存到 {issues_path}")
-    logger.info(f"修订后的内容已保存到 {revised_md_path}")
-    
-    # 返回综合报告和修订内容
-    # 合并所有段落的问题报告
-    all_issues = []
-    for para, issues in issues_log.items():
-        if issues and issues != "无问题":
-            all_issues.append(f"段落问题:\n{issues}")
-    
-    comprehensive_report = "\n\n".join(all_issues) if all_issues else "无问题"
-    return comprehensive_report, revised_content
+
+if __name__ == "__main__":
+    from src.utils import MD_BOOK_PATH
+    for chapter_dir in os.listdir(MD_BOOK_PATH):
+        chapter_path = os.path.join(MD_BOOK_PATH, chapter_dir)
+        if not os.path.isdir(chapter_path):
+            continue
+        if chapter_dir.startswith(".") or chapter_dir == "intermediate":
+            continue
+        batch_content_reviser(chapter_path)    
+        logger.info(f"Processing chapter: {chapter_dir}")
