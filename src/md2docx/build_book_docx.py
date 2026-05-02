@@ -51,6 +51,7 @@ DEFAULT_TABLE_MIN_FONT_SIZE = 9.0
 CAPTION_FONT_SIZE = 9
 EQUATION_NUMBER_COLUMN_RATIO = 0.14
 EQUATION_LAYOUT_MARK = "EquationLayout"
+ALGORITHM_LISTING_LAYOUT_MARK = "AlgorithmListingLayout"
 TOC_TITLE = "目录"
 TOC_PLACEHOLDER = "__MD_BOOK_TOC__"
 COVER_PLACEHOLDER = "__MD_BOOK_COVER__"
@@ -70,6 +71,11 @@ CAPTION_PREFIX_PATTERN = re.compile(
 )
 EQUATION_TAG_PATTERN = re.compile(r"\\tag\*?\{([^{}]+)\}")
 EQUATION_NUMBER_PATTERN = re.compile(r"^\([^)]+\)$")
+CAPTION_REFERENCE_BODY_PATTERN = re.compile(
+    r"^(中|内|给出(?:了)?|展示(?:了)?|示出(?:了)?|显示(?:了)?|描述(?:了)?|列出(?:了)?|为|是|所示|相比(?:于)?|与|对比|表示|说明(?:了)?|采用(?:了)?|使用(?:了)?|包含|对应)"
+)
+CODE_LISTING_STYLE_NAME = "代码清单"
+SOURCE_CODE_STYLE_NAME = "Source Code"
 
 CHINESE_DIGITS = {
     "零": 0,
@@ -280,9 +286,13 @@ def rewrite_equation_tags_for_docx(content: str) -> str:
     return EQUATION_TAG_PATTERN.sub(replace_tag, content)
 
 
+def preprocess_markdown_for_docx(content: str) -> str:
+    return rewrite_equation_tags_for_docx(content)
+
+
 def create_pandoc_input(markdown_path: Path) -> Path:
     original_content = markdown_path.read_text(encoding="utf-8")
-    processed_content = rewrite_equation_tags_for_docx(original_content)
+    processed_content = preprocess_markdown_for_docx(original_content)
     if processed_content == original_content:
         return markdown_path
 
@@ -676,10 +686,147 @@ def mark_equation_layout_table(table) -> None:
     table_properties.append(caption)
 
 
+def mark_algorithm_listing_table(table) -> None:
+    table_properties = table._element.tblPr
+    existing_caption = table_properties.find(qn("w:tblCaption"))
+    if existing_caption is not None:
+        table_properties.remove(existing_caption)
+
+    caption = OxmlElement("w:tblCaption")
+    caption.set(qn("w:val"), ALGORITHM_LISTING_LAYOUT_MARK)
+    table_properties.append(caption)
+
+
 def is_equation_layout_table(table) -> bool:
     table_properties = table._element.tblPr
     caption = table_properties.find(qn("w:tblCaption"))
     return caption is not None and caption.get(qn("w:val")) == EQUATION_LAYOUT_MARK
+
+
+def is_algorithm_listing_table(table) -> bool:
+    table_properties = table._element.tblPr
+    caption = table_properties.find(qn("w:tblCaption"))
+    return (
+        caption is not None
+        and caption.get(qn("w:val")) == ALGORITHM_LISTING_LAYOUT_MARK
+    )
+
+
+def set_cell_shading(cell, fill: str = "F2F2F2") -> None:
+    cell_properties = cell._tc.get_or_add_tcPr()
+    shading = cell_properties.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        cell_properties.append(shading)
+    shading.set(qn("w:val"), "clear")
+    shading.set(qn("w:color"), "auto")
+    shading.set(qn("w:fill"), fill)
+
+
+def set_cell_margins(cell, *, top: str, left: str, bottom: str, right: str) -> None:
+    cell_properties = cell._tc.get_or_add_tcPr()
+    margins = cell_properties.find(qn("w:tcMar"))
+    if margins is None:
+        margins = OxmlElement("w:tcMar")
+        cell_properties.append(margins)
+
+    for side_name, value in (
+        ("top", top),
+        ("left", left),
+        ("bottom", bottom),
+        ("right", right),
+    ):
+        side = margins.find(qn(f"w:{side_name}"))
+        if side is None:
+            side = OxmlElement(f"w:{side_name}")
+            margins.append(side)
+        side.set(qn("w:w"), value)
+        side.set(qn("w:type"), "dxa")
+
+
+def set_math_paragraph_left_aligned(paragraph_element) -> None:
+    paragraph_properties = paragraph_element.find(qn("w:pPr"))
+    if paragraph_properties is None:
+        paragraph_properties = OxmlElement("w:pPr")
+        paragraph_element.insert(0, paragraph_properties)
+
+    paragraph_justification = paragraph_properties.find(qn("w:jc"))
+    if paragraph_justification is None:
+        paragraph_justification = OxmlElement("w:jc")
+        paragraph_properties.append(paragraph_justification)
+    paragraph_justification.set(qn("w:val"), "left")
+
+    for math_paragraph in paragraph_element.findall(qn("m:oMathPara")):
+        math_paragraph_properties = math_paragraph.find(qn("m:oMathParaPr"))
+        if math_paragraph_properties is None:
+            math_paragraph_properties = OxmlElement("m:oMathParaPr")
+            math_paragraph.insert(0, math_paragraph_properties)
+
+        justification = math_paragraph_properties.find(qn("m:jc"))
+        if justification is None:
+            justification = OxmlElement("m:jc")
+            math_paragraph_properties.append(justification)
+        justification.set(qn("m:val"), "left")
+
+    for matrix_properties in paragraph_element.xpath(".//*[local-name()='mPr']"):
+        base_justification = matrix_properties.find(qn("m:baseJc"))
+        if base_justification is None:
+            base_justification = OxmlElement("m:baseJc")
+            matrix_properties.append(base_justification)
+        base_justification.set(qn("m:val"), "left")
+
+    for column_justification in paragraph_element.xpath(".//*[local-name()='mcJc']"):
+        column_justification.set(qn("m:val"), "left")
+
+
+def apply_algorithm_math_listing_paragraph_format(document: Document, paragraph) -> None:
+    apply_code_listing_paragraph_style(document, paragraph)
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    # The reference "代码清单" style uses exact line spacing, which clips
+    # multi-line OMML algorithm flows down to a single visible row.
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    paragraph.paragraph_format.line_spacing = 1.0
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    set_math_paragraph_left_aligned(paragraph._element)
+
+
+def wrap_algorithm_math_paragraphs_in_listing_tables(
+    document: Document, section
+) -> None:
+    available_width, _ = get_content_extent(section)
+    body = document._element.body
+
+    for child in list(body.iterchildren()):
+        if child.tag != qn("w:p"):
+            continue
+
+        math_text = get_math_text_from_element(child)
+        if not math_text:
+            continue
+        if CAPTION_PREFIX_PATTERN.match(math_text) is None or "算法" not in math_text:
+            continue
+
+        wrapped_paragraph = deepcopy(child)
+        set_math_paragraph_left_aligned(wrapped_paragraph)
+
+        listing_table = document.add_table(rows=1, cols=1)
+        listing_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        listing_table.autofit = False
+        mark_algorithm_listing_table(listing_table)
+        set_table_no_borders(listing_table)
+
+        cell = listing_table.cell(0, 0)
+        cell.width = Emu(available_width)
+        listing_table.columns[0].width = Emu(available_width)
+        set_cell_shading(cell)
+        set_cell_margins(cell, top="90", left="120", bottom="90", right="120")
+        cell._tc.clear_content()
+        cell._tc.append(wrapped_paragraph)
+
+        child.addprevious(listing_table._element)
+        child.getparent().remove(child)
 
 
 def extract_equation_number(
@@ -845,7 +992,7 @@ def adjust_table_layout(table, section, table_options: TableSizingOptions) -> No
     current_total = sum(widths)
     if current_total > max_table_width:
         scale_ratio = max_table_width / current_total
-        widths = [
+        widths   = [
             max(int(width * scale_ratio), int(min_column_width)) for width in widths
         ]
 
@@ -938,6 +1085,135 @@ def apply_caption_paragraph_format(paragraph) -> None:
         run.font.italic = False
 
 
+def resolve_paragraph_style(document: Document, *style_names: str):
+    for style_name in style_names:
+        try:
+            style = document.styles[style_name]
+        except KeyError:
+            continue
+        if style.type == WD_STYLE_TYPE.PARAGRAPH:
+            return style
+
+    normalized_names = set(style_names)
+    for style in document.styles:
+        if style.type != WD_STYLE_TYPE.PARAGRAPH:
+            continue
+        if style.name in normalized_names or style.style_id in normalized_names:
+            return style
+    return None
+
+
+def apply_code_listing_paragraph_style(document: Document, paragraph) -> None:
+    style = resolve_paragraph_style(document, CODE_LISTING_STYLE_NAME)
+    if style is None:
+        return
+    paragraph.style = style
+
+
+def set_paragraph_bottom_border(
+    paragraph,
+    *,
+    color: str = "000000",
+    size: str = "8",
+    space: str = "1",
+) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    paragraph_borders = paragraph_properties.find(qn("w:pBdr"))
+    if paragraph_borders is None:
+        paragraph_borders = OxmlElement("w:pBdr")
+        paragraph_properties.append(paragraph_borders)
+
+    bottom_border = paragraph_borders.find(qn("w:bottom"))
+    if bottom_border is None:
+        bottom_border = OxmlElement("w:bottom")
+        paragraph_borders.append(bottom_border)
+
+    bottom_border.set(qn("w:val"), "single")
+    bottom_border.set(qn("w:sz"), size)
+    bottom_border.set(qn("w:space"), space)
+    bottom_border.set(qn("w:color"), color)
+
+
+def is_listing_paragraph(paragraph) -> bool:
+    return get_paragraph_style_name(paragraph) in {
+        SOURCE_CODE_STYLE_NAME,
+        CODE_LISTING_STYLE_NAME,
+    }
+
+
+def get_math_text_from_element(paragraph_element) -> str:
+    math_text_nodes = paragraph_element.xpath(
+        ".//*[local-name()='oMath' or local-name()='oMathPara']//*[local-name()='t']/text()"
+    )
+    return "".join(math_text_nodes).strip()
+
+
+def get_math_text(paragraph) -> str:
+    return get_math_text_from_element(paragraph._element)
+
+
+def is_algorithm_math_paragraph(paragraph) -> bool:
+    math_text = get_math_text(paragraph)
+    if not math_text:
+        return False
+    return CAPTION_PREFIX_PATTERN.match(math_text) is not None and "算法" in math_text
+
+
+def looks_like_caption_text(text: str) -> bool:
+    match = CAPTION_PREFIX_PATTERN.match(text.strip())
+    if match is None:
+        return False
+
+    caption_body = match.group(3).strip()
+    if not caption_body:
+        return True
+    if CAPTION_REFERENCE_BODY_PATTERN.match(caption_body):
+        return False
+    if re.search(r"[，。；！？]", caption_body):
+        return False
+    return True
+
+
+def previous_nonempty_paragraph(paragraphs: tuple, index: int):
+    for previous_index in range(index - 1, -1, -1):
+        paragraph = paragraphs[previous_index]
+        if paragraph.text.strip() or contains_drawing(paragraph):
+            return paragraph
+    return None
+
+
+def next_nonempty_paragraph(paragraphs: tuple, index: int):
+    for next_index in range(index + 1, len(paragraphs)):
+        paragraph = paragraphs[next_index]
+        if paragraph.text.strip() or contains_drawing(paragraph):
+            return paragraph
+    return None
+
+
+def has_adjacent_table(paragraph) -> bool:
+    previous_element = paragraph._element.getprevious()
+    next_element = paragraph._element.getnext()
+    table_tag = qn("w:tbl")
+    return (
+        previous_element is not None
+        and previous_element.tag == table_tag
+        or next_element is not None
+        and next_element.tag == table_tag
+    )
+
+
+def is_algorithm_listing_title(
+    paragraph, paragraphs: tuple | None = None, index: int | None = None
+) -> bool:
+    match = CAPTION_PREFIX_PATTERN.match(paragraph.text.strip())
+    if match is None or match.group(1) != "算法":
+        return False
+    if paragraphs is None or index is None:
+        return False
+    next_paragraph = next_nonempty_paragraph(paragraphs, index)
+    return next_paragraph is not None and is_listing_paragraph(next_paragraph)
+
+
 def contains_drawing(paragraph) -> bool:
     return bool(paragraph._element.xpath(".//w:drawing"))
 
@@ -949,13 +1225,26 @@ def has_numbering(paragraph) -> bool:
     return paragraph_properties.find(qn("w:numPr")) is not None
 
 
-def is_caption(paragraph) -> bool:
+def is_caption(paragraph, paragraphs: tuple | None = None, index: int | None = None) -> bool:
     text = paragraph.text.strip()
     if not text:
         return False
     if get_paragraph_style_name(paragraph) == "Caption":
         return True
-    return CAPTION_PREFIX_PATTERN.match(text) is not None
+    if not looks_like_caption_text(text):
+        return False
+    if has_adjacent_table(paragraph):
+        return True
+    if paragraphs is None or index is None:
+        return False
+
+    previous_paragraph = previous_nonempty_paragraph(paragraphs, index)
+    next_paragraph = next_nonempty_paragraph(paragraphs, index)
+    return any(
+        candidate is not None
+        and (contains_drawing(candidate) or is_listing_paragraph(candidate))
+        for candidate in (previous_paragraph, next_paragraph)
+    )
 
 
 def clear_paragraph_borders(paragraph) -> None:
@@ -1760,12 +2049,21 @@ def postprocess_docx(
     remove_extra_front_matter_section_breaks(document)
     scale_inline_shapes(document, image_options)
     base_section = document.sections[0]
+    wrap_algorithm_math_paragraphs_in_listing_tables(document, base_section)
     body_paragraphs = tuple(document.paragraphs)
     body_paragraph_elements = {paragraph._element for paragraph in body_paragraphs}
+    all_paragraphs = tuple(iter_paragraphs(document))
 
     in_reference_section = False
 
-    for paragraph in body_paragraphs:
+    for index, paragraph in enumerate(body_paragraphs):
+        if is_algorithm_math_paragraph(paragraph):
+            apply_code_listing_paragraph_style(document, paragraph)
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            continue
+
         if not paragraph.text.strip() and not contains_drawing(paragraph):
             continue
 
@@ -1777,12 +2075,21 @@ def postprocess_docx(
             in_reference_section = False
             continue
 
-        if is_caption(paragraph):
+        if is_listing_paragraph(paragraph):
+            apply_code_listing_paragraph_style(document, paragraph)
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            continue
+
+        if is_caption(paragraph, body_paragraphs, index):
             try:
                 paragraph.style = document.styles["Caption"]
             except KeyError:
                 pass
             apply_caption_paragraph_format(paragraph)
+            if is_algorithm_listing_title(paragraph, body_paragraphs, index):
+                paragraph.paragraph_format.space_after = Pt(0)
+                set_paragraph_bottom_border(paragraph)
             continue
 
         if contains_drawing(paragraph):
@@ -1798,8 +2105,15 @@ def postprocess_docx(
             strip_leading_whitespace_runs(paragraph)
             continue
 
-    for paragraph in iter_paragraphs(document):
+    for index, paragraph in enumerate(all_paragraphs):
         if paragraph._element in body_paragraph_elements:
+            continue
+
+        if is_algorithm_math_paragraph(paragraph):
+            apply_code_listing_paragraph_style(document, paragraph)
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
             continue
 
         if not paragraph.text.strip() and not contains_drawing(paragraph):
@@ -1808,12 +2122,21 @@ def postprocess_docx(
         if is_heading(paragraph):
             continue
 
-        if is_caption(paragraph):
+        if is_listing_paragraph(paragraph):
+            apply_code_listing_paragraph_style(document, paragraph)
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            continue
+
+        if is_caption(paragraph, all_paragraphs, index):
             try:
                 paragraph.style = document.styles["Caption"]
             except KeyError:
                 pass
             apply_caption_paragraph_format(paragraph)
+            if is_algorithm_listing_title(paragraph, all_paragraphs, index):
+                paragraph.paragraph_format.space_after = Pt(0)
+                set_paragraph_bottom_border(paragraph)
             continue
 
         if contains_drawing(paragraph):
@@ -1843,6 +2166,20 @@ def postprocess_docx(
                     set_run_fonts(run)
                     run.font.size = Pt(BODY_FONT_SIZE)
                     run.font.italic = False
+            continue
+
+        if is_algorithm_listing_table(table):
+            set_table_no_borders(table)
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            table.autofit = False
+            available_width, _ = get_content_extent(base_section)
+            table.columns[0].width = Emu(available_width)
+            cell = table.cell(0, 0)
+            cell.width = Emu(available_width)
+            set_cell_shading(cell)
+            set_cell_margins(cell, top="90", left="120", bottom="90", right="120")
+            for paragraph in cell.paragraphs:
+                apply_algorithm_math_listing_paragraph_format(document, paragraph)
             continue
 
         adjust_table_layout(table, base_section, table_options)
