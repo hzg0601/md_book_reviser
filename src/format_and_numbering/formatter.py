@@ -20,12 +20,45 @@ INLINE_MATH_RE = r"(?<!\$)\$(?!\$)((?:(?!\n\n).)*?)(?<!\$)\$(?!\$)"
 BLOCK_MATH_RE = r"\$\$(.*?)\$\$"
 LIST_TITLE_BOLD_RE = r"\*\*\s*\d+(?:\.\d+)*\.\s+.*?\*\*"
 IMAGE_RE = r"!\[[^\]]*\]\([^\)]+\)"
+LINK_RE = r"\[[^\]]+\]\([^\)]+\)"
+INLINE_CODE_RE = r"`[^`\n]+`"
+URL_RE = r"https?://\S+"
+NUMBER_RE = r"(?<!\d)\d+(?:[\.,，:：;；]\d+)+(?!\d)"
+ELLIPSIS_RE = r"\.{3,}"
+FORMULA_STEP_MARKER_RE = r"(?<![\dA-Za-z])\d+[\.:：](?=(?:\s|\\|$))"
 CAPTION_LINE_RE = re.compile(r"^(图|表|算法|公式)\s*\d+(?:[-－—.．]\d+)+(?:\s+.*|$)")
 ITEM_MARKER_RE = re.compile(
     r"(?P<prefix>^|(?<=[：:；;，,。！？!?\n]))\s*"
     r"(?P<marker>(?:\d+(?:[\.．、,，)](?!\d)|）)|\([A-Za-zivxIVX\d]+\)|（[A-Za-zivxIVX\d]+）))"
     r"\s*(?=\S)"
 )
+ENG_TO_ZH_PUNCT = str.maketrans({
+    ",": "，",
+    ".": "。",
+    "?": "？",
+    "!": "！",
+    ":": "：",
+    ";": "；",
+})
+ZH_TO_ENG_PUNCT = str.maketrans({
+    "，": ",",
+    "。": ".",
+    "？": "?",
+    "！": "!",
+    "：": ":",
+    "；": ";",
+})
+ENG_PUNCT_CHARS = ",.?!:;"
+MASKABLE_INLINE_PATTERNS = [
+    (BLOCK_MATH_RE, re.DOTALL),
+    (INLINE_MATH_RE, re.DOTALL),
+    (LIST_TITLE_BOLD_RE, re.DOTALL),
+    (IMAGE_RE, re.DOTALL),
+    (LINK_RE, re.DOTALL),
+    (INLINE_CODE_RE, re.DOTALL),
+    (URL_RE, re.DOTALL),
+]
+SYMBOL_TEXT_MASK_PATTERNS = MASKABLE_INLINE_PATTERNS + [(NUMBER_RE, re.DOTALL)]
 
 
 def _mask_patterns(text, patterns):
@@ -82,10 +115,191 @@ def _is_table_line(stripped):
 
 
 def _remove_unnecessary_spaces(text):
-    text = re.sub(r"(?<=[\p{Han}])\s+(?=[\p{Han}])", "", text)
-    text = re.sub(r"(?<=[\p{Han}])\s+(?=[A-Za-z0-9(\[{$%\\])", "", text)
-    text = re.sub(r"(?<=[A-Za-z0-9)\]}$%\\])\s+(?=[\p{Han}])", "", text)
+    text = re.sub(r"(?<=[\p{Han}])[ \t]+(?=[\p{Han}])", "", text)
+    text = re.sub(r"(?<=[\p{Han}])[ \t]+(?=[A-Za-z0-9(\[{$%\\])", "", text)
+    text = re.sub(r"(?<=[A-Za-z0-9)\]}$%\\])[ \t]+(?=[\p{Han}])", "", text)
+    text = re.sub(r"(?<=\S)[ \t]+(?=[，。！？；：,.!?;:])", "", text)
+    text = re.sub(r"(?<=[\p{Han}])[ \t]+(?=[，。！？；：,.!?;:])", "", text)
+    text = re.sub(r"(?<=[，。！？；：,.!?;:])[ \t]+(?=[\p{Han}])", "", text)
+    text = re.sub(r"(?<=[，。！？；：,.!?;:])[ \t]+(?=[，。！？；：,.!?;:])", "", text)
+    text = re.sub(r"(?<=[A-Za-z0-9])[ \t]{2,}(?=[A-Za-z0-9])", " ", text)
     return text
+
+
+def _normalize_symbol_chars(text, translation_table):
+    return text.translate(translation_table)
+
+
+def _normalize_numeric_punctuation(text):
+    return re.sub(
+        r"(?<=\d)[，。；：](?=\d)",
+        lambda match: match.group(0).translate(ZH_TO_ENG_PUNCT),
+        text,
+    )
+
+
+def _normalize_inline_math_symbols(text):
+    def repl(match):
+        expr = match.group(1)
+        return f"${expr.translate(ZH_TO_ENG_PUNCT)}$"
+
+    return re.sub(INLINE_MATH_RE, repl, text, flags=re.DOTALL)
+
+
+def _contains_chinese(text):
+    return bool(re.search(r"\p{Han}", text))
+
+
+def _find_non_space_char(text, index, step):
+    current = index
+    while 0 <= current < len(text):
+        if not text[current].isspace():
+            return text[current]
+        current += step
+    return ""
+
+
+def _find_non_space_index(text, index, step):
+    current = index
+    while 0 <= current < len(text):
+        if not text[current].isspace():
+            return current
+        current += step
+    return -1
+
+
+def _should_keep_english_punct(text, index):
+    prev_char = _find_non_space_char(text, index - 1, -1)
+    next_char = _find_non_space_char(text, index + 1, 1)
+    return bool(prev_char and next_char and prev_char.isascii() and prev_char.isalpha() and next_char.isascii() and next_char.isalpha())
+
+
+def _should_keep_non_chinese_punct(text, index):
+    prev_char = _find_non_space_char(text, index - 1, -1)
+    next_index = _find_non_space_index(text, index + 1, 1)
+    next_char = text[next_index] if next_index != -1 else ""
+    next_starts_command = (
+        next_index != -1
+        and text[next_index] == "\\"
+        and next_index + 1 < len(text)
+        and text[next_index + 1].isalpha()
+    )
+    return bool(
+        prev_char
+        and next_char
+        and (next_char != "\\" or next_starts_command)
+        and not _contains_chinese(prev_char)
+        and not _contains_chinese(next_char)
+    )
+
+
+def _convert_body_punctuation(text):
+    converted = []
+    index = 0
+    while index < len(text):
+        if text.startswith("...", index):
+            end = index + 3
+            while end < len(text) and text[end] == ".":
+                end += 1
+            converted.append(text[index:end])
+            index = end
+            continue
+
+        char = text[index]
+        if char in ENG_PUNCT_CHARS and _should_keep_english_punct(text, index):
+            converted.append(char)
+        else:
+            converted.append(char.translate(ENG_TO_ZH_PUNCT))
+        index += 1
+
+    return "".join(converted)
+
+
+def _convert_pseudocode_punctuation(text):
+    converted = []
+    index = 0
+    while index < len(text):
+        if text.startswith("...", index):
+            end = index + 3
+            while end < len(text) and text[end] == ".":
+                end += 1
+            converted.append(text[index:end])
+            index = end
+            continue
+
+        char = text[index]
+        if char in ENG_PUNCT_CHARS and _should_keep_non_chinese_punct(text, index):
+            converted.append(char)
+        else:
+            converted.append(char.translate(ENG_TO_ZH_PUNCT))
+        index += 1
+
+    return "".join(converted)
+
+
+def _process_text_line_symbols(line):
+    line = _normalize_numeric_punctuation(line)
+    masked_line, replacements = _mask_patterns(
+        line, SYMBOL_TEXT_MASK_PATTERNS + [(ELLIPSIS_RE, re.DOTALL)]
+    )
+    converted_line = _convert_body_punctuation(masked_line)
+
+    for key, value in list(replacements.items()):
+        if value.startswith("$"):
+            replacements[key] = _normalize_inline_math_symbols(value)
+
+    return _unmask_patterns(converted_line, replacements)
+
+
+def _process_pseudocode_line_symbols(line):
+    if _contains_chinese(line):
+        line = _normalize_numeric_punctuation(line)
+        masked_line, replacements = _mask_patterns(
+            line,
+            SYMBOL_TEXT_MASK_PATTERNS
+            + [(ELLIPSIS_RE, re.DOTALL), (FORMULA_STEP_MARKER_RE, re.DOTALL)],
+        )
+        converted_line = _convert_pseudocode_punctuation(masked_line)
+
+        for key, value in list(replacements.items()):
+            if value.startswith("$"):
+                replacements[key] = _normalize_inline_math_symbols(value)
+
+        return _unmask_patterns(converted_line, replacements)
+    return _normalize_symbol_chars(line, ZH_TO_ENG_PUNCT)
+
+
+def _process_formula_line_symbols(line):
+    if line.strip() == "$$":
+        return line
+
+    masked_line, replacements = _mask_patterns(
+        line, [(FORMULA_STEP_MARKER_RE, re.DOTALL)]
+    )
+    converted_line = _normalize_symbol_chars(masked_line, ZH_TO_ENG_PUNCT)
+    return _unmask_patterns(converted_line, replacements)
+
+
+def _is_pseudocode_math_block(block_lines):
+    if not any(_contains_chinese(line) for line in block_lines):
+        return False
+
+    block_text = "".join(block_lines)
+    markers = [
+        r"\\begin\{array\}",
+        r"\\hline",
+        r"\\textbf\{for",
+        r"\\textbf\{end",
+        r"\\textbf\{return",
+        r"算法",
+    ]
+    return any(re.search(marker, block_text) for marker in markers)
+
+
+def _process_math_block_symbols(block_lines):
+    if _is_pseudocode_math_block(block_lines):
+        return [_process_pseudocode_line_symbols(line) for line in block_lines]
+    return [_process_formula_line_symbols(line) for line in block_lines]
 
 
 def _normalize_item_markers_in_block(block_lines):
@@ -289,13 +503,19 @@ def item_normalize(chapter_path):
 
 def remove_content_blank(chapter_path):
     """
-    删除不必要的空格，
-    包括中文与英文/公式间的空格，
-    以及中文与中文间的不必要空格，
+    删除不必要的空格。
+    包括：
+    （1）中文与英文/公式间的空格；
+    （2）中文与中文间的不必要空格；
+    （3）中文与标点符号间的空格；
+    （4）标点符号与标点符号间不必要空格；
+    （5）英文与英文间不必要空格。
     但以下内容中的空格不要动:
     （1）形如“**1. xx**”等加粗的，
     （2）参考文献、相关引用章节中的条目，
     （3）以及章标题、节标题、图名、表名、算法名、公式间的空格。
+    （4）markdown表格中的空格。
+    （5）代码块中的空格。
     """
     md_path = get_md_path(chapter_path)
     content = chapter_reader(md_path)
@@ -345,12 +565,7 @@ def remove_content_blank(chapter_path):
 
         masked_line, replacements = _mask_patterns(
             line,
-            [
-                (BLOCK_MATH_RE, re.DOTALL),
-                (INLINE_MATH_RE, re.DOTALL),
-                (LIST_TITLE_BOLD_RE, re.DOTALL),
-                (IMAGE_RE, re.DOTALL),
-            ],
+            MASKABLE_INLINE_PATTERNS,
         )
         compact_line = _remove_unnecessary_spaces(masked_line)
         result.append(_unmask_patterns(compact_line, replacements))
@@ -360,6 +575,63 @@ def remove_content_blank(chapter_path):
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
 
+def symbol_convert(chapter_path):
+    """
+    将正文中的英文标点符号统一修改为中文标点符号，
+    将公式中标点符号统一修改为英文标点符号。
+    对伪代码按行处理：若该行含中文，则使用正文的符号规则；否则使用英文符号。
+    符号类型，包括：！？。，；：等。
+    
+    """
+    md_path = get_md_path(chapter_path)
+    content = chapter_reader(md_path)
+    if not content:
+        logger.error(f"章节内容为空: {md_path}")
+        return
+
+    lines = content.splitlines(keepends=True)
+    result = []
+    in_code_block = False
+    math_block = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            result.append(line)
+            in_code_block = not in_code_block
+            continue
+
+        if in_code_block:
+            result.append(_process_pseudocode_line_symbols(line))
+            continue
+
+        if math_block:
+            math_block.append(line)
+            if stripped.count("$$") % 2 == 1:
+                result.extend(_process_math_block_symbols(math_block))
+                math_block = []
+            continue
+
+        if _is_table_line(stripped):
+            result.append(line)
+            continue
+
+        if stripped.count("$$") >= 2:
+            result.extend(_process_math_block_symbols([line]))
+            continue
+
+        if stripped.count("$$") % 2 == 1:
+            math_block = [line]
+            continue
+
+        result.append(_process_text_line_symbols(line))
+
+    if math_block:
+        result.extend(_process_math_block_symbols(math_block))
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("".join(result))
 
 if __name__ == "__main__":
     # 示例用法
@@ -368,8 +640,12 @@ if __name__ == "__main__":
     for chapter_dir in os.listdir(MD_BOOK_PATH):
         chapter_path = os.path.join(MD_BOOK_PATH, chapter_dir)
         if os.path.isdir(chapter_path):
+            if "文献" in chapter_dir or "引用" in chapter_dir:
+                continue
+            
             logger.info(f"Processing chapter: {chapter_dir}")
             # remove_blank_in_equation(chapter_path)
             # black2normal(chapter_path)
             # item_normalize(chapter_path)
-            remove_content_blank(chapter_path)
+            # remove_content_blank(chapter_path)
+            symbol_convert(chapter_path)

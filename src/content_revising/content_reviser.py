@@ -424,5 +424,6 @@ if __name__ == "__main__":
             continue
         if chapter_dir.startswith(".") or chapter_dir == "intermediate":
             continue
+        logger.info(f"开始处理章节: {chapter_dir}")
         batch_content_reviser(chapter_path)    
         logger.info(f"Processing chapter: {chapter_dir}")

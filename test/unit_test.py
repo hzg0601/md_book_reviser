@@ -50,5 +50,5 @@ def batch_chapter_process(md_book_path):
 
 if __name__ == "__main__":
 
-    # batch_chapter_process(md_book_path)
+    batch_chapter_process(md_book_path)
     build_book_docx_main()
