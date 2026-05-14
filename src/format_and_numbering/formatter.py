@@ -237,12 +237,17 @@ def _convert_pseudocode_punctuation(text):
     return "".join(converted)
 
 
+def _convert_chinese_quotes(text):
+    return re.sub(r'"([^"\n]*?\p{Han}[^"\n]*?)"', r'“\1”', text)
+
+
 def _process_text_line_symbols(line):
     line = _normalize_numeric_punctuation(line)
     masked_line, replacements = _mask_patterns(
         line, SYMBOL_TEXT_MASK_PATTERNS + [(ELLIPSIS_RE, re.DOTALL)]
     )
     converted_line = _convert_body_punctuation(masked_line)
+    converted_line = _convert_chinese_quotes(converted_line)
 
     for key, value in list(replacements.items()):
         if value.startswith("$"):
@@ -260,6 +265,7 @@ def _process_pseudocode_line_symbols(line):
             + [(ELLIPSIS_RE, re.DOTALL), (FORMULA_STEP_MARKER_RE, re.DOTALL)],
         )
         converted_line = _convert_pseudocode_punctuation(masked_line)
+        converted_line = _convert_chinese_quotes(converted_line)
 
         for key, value in list(replacements.items()):
             if value.startswith("$"):
