@@ -14,3 +14,7 @@ remote:
   MD_BOOK_PATH: "C:\\Users\\hzg06\\OneDrive\\notion\\Training and Inferrence_Algorithm Stack of LLM"
   MAX_CHARS_PER_CHUNK: 28000
 mode: "local"
+
+book_name: "大模型算法技术栈：训练与推理"
+author: "黄志国 著"
+ackonwledgement: "谨以此书致敬所有知识的创造者与布道者。"

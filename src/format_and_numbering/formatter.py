@@ -39,6 +39,8 @@ ENG_TO_ZH_PUNCT = str.maketrans({
     "!": "！",
     ":": "：",
     ";": "；",
+    "(": "（",
+    ")": "）",
 })
 ZH_TO_ENG_PUNCT = str.maketrans({
     "，": ",",
@@ -47,8 +49,10 @@ ZH_TO_ENG_PUNCT = str.maketrans({
     "！": "!",
     "：": ":",
     "；": ";",
+    "（": "(",
+    "）": ")",
 })
-ENG_PUNCT_CHARS = ",.?!:;"
+ENG_PUNCT_CHARS = ",.?!:;()"
 MASKABLE_INLINE_PATTERNS = [
     (BLOCK_MATH_RE, re.DOTALL),
     (INLINE_MATH_RE, re.DOTALL),
@@ -169,6 +173,12 @@ def _find_non_space_index(text, index, step):
 
 
 def _should_keep_english_punct(text, index):
+    char = text[index]
+    if char in '()':
+        if _contains_chinese(text):
+            return False
+        return True
+
     prev_char = _find_non_space_char(text, index - 1, -1)
     next_char = _find_non_space_char(text, index + 1, 1)
     return bool(prev_char and next_char and prev_char.isascii() and prev_char.isalpha() and next_char.isascii() and next_char.isalpha())

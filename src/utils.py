@@ -1,5 +1,6 @@
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 from loguru import logger
@@ -9,6 +10,12 @@ import yaml
 
 # ─────────────── 从 config.yaml 读取配置 ───────────────
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+
+
+def _load_config_root(config_path: str = _CONFIG_PATH) -> dict:
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    return cfg
 
 
 def _load_config(config_path: str = _CONFIG_PATH) -> dict:
@@ -22,6 +29,7 @@ def _load_config(config_path: str = _CONFIG_PATH) -> dict:
     return env_cfg
 
 
+_cfg_root = _load_config_root()
 _cfg = _load_config()
 
 VLM_API_ENDPOINT = _cfg["VLM_ENDPOINT"]
@@ -29,8 +37,14 @@ VLM_MODEL_NAME = _cfg["VLM_MODEL_NAME"]
 VLM_API_KEY = _cfg["VLM_API_KEY"]
 BOCHA_API_KEY = _cfg["BOCHA_API_KEY"]
 MD_BOOK_PATH = _cfg["MD_BOOK_PATH"]
-MAX_CHARS_PER_CHUNK = _cfg.get("MAX_CHARS_PER_CHUNK", 28000)  # 默认每块约16k字符，兼容本地32K上下文模型
+MAX_CHARS_PER_CHUNK = _cfg.get(
+    "MAX_CHARS_PER_CHUNK", 28000
+)  # 默认每块约16k字符，兼容本地32K上下文模型
 REALESRGAN_PATH = _cfg["REALESRGAN_PATH"]
+
+BOOK_NAME = _cfg_root.get("book_name", "")
+AUTHOR = _cfg_root.get("author", "")
+ACKNOWLEDGEMENT = _cfg_root.get("ackonwledgement", "")
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 

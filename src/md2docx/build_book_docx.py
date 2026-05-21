@@ -26,12 +26,12 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Emu, Pt, RGBColor
 
-
 DEFAULT_TEMPLATE = Path(__file__).with_name("pandoc_docx_defaults.yaml")
 DEFAULT_REFERENCE_DOC = Path(__file__).with_name("pandoc_reference.docx")
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "pandoc_docx"
 
 SECTION_ORDER = {
+    "作者简介": -1,
     "前言": 0,
     "自序": 1,
 }
@@ -779,7 +779,9 @@ def set_math_paragraph_left_aligned(paragraph_element) -> None:
         column_justification.set(qn("m:val"), "left")
 
 
-def apply_algorithm_math_listing_paragraph_format(document: Document, paragraph) -> None:
+def apply_algorithm_math_listing_paragraph_format(
+    document: Document, paragraph
+) -> None:
     apply_code_listing_paragraph_style(document, paragraph)
     paragraph.paragraph_format.first_line_indent = Pt(0)
     paragraph.paragraph_format.space_before = Pt(0)
@@ -992,7 +994,7 @@ def adjust_table_layout(table, section, table_options: TableSizingOptions) -> No
     current_total = sum(widths)
     if current_total > max_table_width:
         scale_ratio = max_table_width / current_total
-        widths   = [
+        widths = [
             max(int(width * scale_ratio), int(min_column_width)) for width in widths
         ]
 
@@ -1225,7 +1227,9 @@ def has_numbering(paragraph) -> bool:
     return paragraph_properties.find(qn("w:numPr")) is not None
 
 
-def is_caption(paragraph, paragraphs: tuple | None = None, index: int | None = None) -> bool:
+def is_caption(
+    paragraph, paragraphs: tuple | None = None, index: int | None = None
+) -> bool:
     text = paragraph.text.strip()
     if not text:
         return False
@@ -1330,6 +1334,87 @@ def prepare_cover_and_front_matter_sections(docx_path: Path) -> None:
 
     section_template = deepcopy(document.sections[0]._sectPr)
     first_paragraph = document.paragraphs[0]
+
+    preface_paragraph = next(
+        (
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.strip() == "前言"
+        ),
+        None,
+    )
+    if preface_paragraph is None:
+        raise RuntimeError("Could not find the preface heading for front-matter split.")
+
+    # === TITLE PAGE BREAK (Insert before preface) ===
+    title_page_break_paragraph = preface_paragraph.insert_paragraph_before(" ")
+    for run in title_page_break_paragraph.runs:
+        run.font.hidden = True
+    title_page_break_paragraph.paragraph_format.first_line_indent = Pt(0)
+    title_page_break_paragraph.paragraph_format.space_before = Pt(0)
+    title_page_break_paragraph.paragraph_format.space_after = Pt(0)
+    tp_break_properties = title_page_break_paragraph._p.get_or_add_pPr()
+    existing_tp_section = tp_break_properties.find(qn("w:sectPr"))
+    if existing_tp_section is not None:
+        tp_break_properties.remove(existing_tp_section)
+    tp_break_properties.append(deepcopy(section_template))
+
+    # === TITLE PAGE CONTENT ===
+    # Read config
+    repo_root = Path(__file__).resolve().parents[2]
+    import sys
+
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from src.utils import BOOK_NAME, AUTHOR, ACKNOWLEDGEMENT
+    except ImportError:
+        BOOK_NAME = "大模型算法技术栈：训练与推理"
+        AUTHOR = "黄志国 著"
+        ACKNOWLEDGEMENT = "谨以此书致敬所有知识的创造者与布道者。"
+
+    first_tp_paragraph = None
+
+    # Top padding
+    for i in range(8):
+        p = title_page_break_paragraph.insert_paragraph_before("")
+        if first_tp_paragraph is None:
+            first_tp_paragraph = p
+
+    # Title
+    p_title = title_page_break_paragraph.insert_paragraph_before("")
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_title = p_title.add_run(BOOK_NAME or "大模型算法技术栈：训练与推理")
+    run_title.font.size = Pt(22)  # 二号
+    run_title.font.name = "黑体"
+    run_title.font.bold = True
+    run_title._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    p_title.paragraph_format.space_after = Pt(24)
+
+    # Author
+    p_author = title_page_break_paragraph.insert_paragraph_before("")
+    p_author.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_author = p_author.add_run(AUTHOR or "黄志国 著")
+    run_author.font.size = Pt(15)  # 小三号
+    run_author.font.name = "黑体"
+    run_author.font.bold = True
+    run_author._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+
+    # Middle padding
+    for _ in range(15):
+        p = title_page_break_paragraph.insert_paragraph_before("")
+        p.paragraph_format.space_after = Pt(24)
+
+    # Acknowledgement
+    p_ack = title_page_break_paragraph.insert_paragraph_before("")
+    p_ack.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_ack = p_ack.add_run(ACKNOWLEDGEMENT or "谨以此书致敬所有知识的创造者与布道者。")
+    run_ack.font.size = Pt(10.5)  # 五号
+    run_ack.font.name = "楷体"
+    run_ack._element.rPr.rFonts.set(qn("w:eastAsia"), "楷体")
+    p_ack.paragraph_format.space_after = Pt(24)
+
+    # === COVER PAGE BREAK (Insert at the very beginning) ===
     cover_break_paragraph = first_paragraph.insert_paragraph_before(" ")
     for run in cover_break_paragraph.runs:
         run.font.hidden = True
@@ -1347,19 +1432,6 @@ def prepare_cover_and_front_matter_sections(docx_path: Path) -> None:
     cover_paragraph.paragraph_format.space_before = Pt(0)
     cover_paragraph.paragraph_format.space_after = Pt(0)
     cover_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    preface_paragraph = next(
-        (
-            paragraph
-            for paragraph in document.paragraphs
-            if paragraph.text.strip() == "前言"
-        ),
-        None,
-    )
-    if preface_paragraph is None:
-        raise RuntimeError("Could not find the preface heading for front-matter split.")
-
-    insert_section_break_before(preface_paragraph, section_template)
 
     save_document_with_retry(document, docx_path)
 
@@ -1388,8 +1460,7 @@ def convert_inline_shape_to_floating_anchor(inline) -> object:
         if effect_extent is not None
         else ""
     )
-    anchor = parse_xml(
-        f"""
+    anchor = parse_xml(f"""
         <wp:anchor distT="0" distB="0" distL="0" distR="0"
             simplePos="0" relativeHeight="251659264" behindDoc="0"
             locked="0" layoutInCell="1" allowOverlap="1"
@@ -1404,8 +1475,7 @@ def convert_inline_shape_to_floating_anchor(inline) -> object:
           {frame_properties_xml}
           {graphic_xml}
         </wp:anchor>
-        """
-    )
+        """)
     inline.getparent().replace(inline, anchor)
     return anchor
 
@@ -1659,10 +1729,40 @@ def _make_page_number_footer(
 
 
 def _clear_page_number_footer(section) -> None:
+    # Disable different first page so we only have to clear the primary header/footer
+    section.different_first_page_header_footer = False
+
+    from docx.oxml import OxmlElement
+
+    def clear_element(element):
+        element.clear()
+        element.append(OxmlElement("w:p"))
+
+    # Clear footers
     footer = section.footer
     footer.is_linked_to_previous = False
-    for para in footer.paragraphs:
-        para.clear()
+    clear_element(footer._element)
+
+    even_footer = section.even_page_footer
+    even_footer.is_linked_to_previous = False
+    clear_element(even_footer._element)
+
+    first_footer = section.first_page_footer
+    first_footer.is_linked_to_previous = False
+    clear_element(first_footer._element)
+
+    # Clear headers just in case
+    header = section.header
+    header.is_linked_to_previous = False
+    clear_element(header._element)
+
+    even_header = section.even_page_header
+    even_header.is_linked_to_previous = False
+    clear_element(even_header._element)
+
+    first_header = section.first_page_header
+    first_header.is_linked_to_previous = False
+    clear_element(first_header._element)
 
     sect_pr = section._sectPr
     pg_num_type = sect_pr.find(qn("w:pgNumType"))
