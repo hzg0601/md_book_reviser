@@ -141,6 +141,8 @@ def chat_vlm(
     elif text_content:
         content = f"{prompt}\n\n文本内容如下：\n{text_content}"
         messages.append({"role": "user", "content": content})
+    elif prompt:
+        messages.append({"role": "user", "content": prompt})
 
     payload = {"model": VLM_MODEL_NAME, "messages": messages, "temperature": 0.2}
 
