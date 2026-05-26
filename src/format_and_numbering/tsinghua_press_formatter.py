@@ -262,11 +262,18 @@ def extract_table_units(text: str) -> str:
         num_cols = len(parsed_rows[0])
         modified = False
 
+        # 支持单位前有~、≈、约等修饰符，支持空格、支持Gbps等单位
+        unit_pattern = (
+            r"([~≈约]?)([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?:\s*)([a-zA-Z/%°μ]+)"
+        )
+
         for col_idx in range(num_cols):
             unit = None
             is_uniform = True
             has_data = False
+            units_found = set()
 
+            # 检查所有数据行（从第3行开始）
             for row_idx in range(2, len(parsed_rows)):
                 if col_idx >= len(parsed_rows[row_idx]):
                     is_uniform = False
@@ -276,15 +283,14 @@ def extract_table_units(text: str) -> str:
                 if not cell or cell == "-":
                     continue
 
-                m = re.match(
-                    r"^([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([a-zA-Z/%°μ]+)$", cell
-                )
+                m = re.match(unit_pattern + r"$", cell)
                 if not m:
                     is_uniform = False
                     break
 
                 has_data = True
-                current_unit = m.group(2)
+                current_unit = m.group(3)
+                units_found.add(current_unit)
                 if unit is None:
                     unit = current_unit
                 elif unit != current_unit:
@@ -295,7 +301,11 @@ def extract_table_units(text: str) -> str:
                 modified = True
                 header = parsed_rows[0][col_idx].strip()
                 original_header = parsed_rows[0][col_idx]
-                new_header = f"{header}（{unit}）"
+                # 避免重复加单位
+                if f"（{unit}）" not in header and f"({unit})" not in header:
+                    new_header = f"{header}（{unit}）"
+                else:
+                    new_header = header
                 parsed_rows[0][col_idx] = (
                     original_header.replace(header, new_header)
                     if header
@@ -307,12 +317,10 @@ def extract_table_units(text: str) -> str:
                         cell = parsed_rows[row_idx][col_idx].strip()
                         if cell and cell != "-":
                             original_cell = parsed_rows[row_idx][col_idx]
-                            m = re.match(
-                                r"^([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([a-zA-Z/%°μ]+)$",
-                                cell,
-                            )
+                            m = re.match(unit_pattern + r"$", cell)
                             if m:
-                                num_val = m.group(1)
+                                # 保留修饰符和数值，去掉单位
+                                num_val = (m.group(1) or "") + m.group(2)
                                 parsed_rows[row_idx][col_idx] = original_cell.replace(
                                     cell, num_val
                                 )
@@ -414,11 +422,15 @@ def remove_duplicated_abbreviations(book_path: str = MD_BOOK_PATH) -> None:
         full = m.group(2).strip()
         abbr = m.group(3).strip()
         p2 = m.group(4)
-        if abbr.lower() in seen_abbreviations:
+
+        # 使用 全拼+缩写 作为去重的唯一标识
+        unique_key = f"{full.lower()}_{abbr.lower()}"
+
+        if unique_key in seen_abbreviations:
             new_val = ""
             logger.info(f"[去除重复缩写] '{m.group(0)}' -> '{new_val}'")
             return new_val
-        seen_abbreviations.add(abbr.lower())
+        seen_abbreviations.add(unique_key)
         return m.group(0)
 
     for chapter_dir in sorted(os.listdir(book_path), key=get_chapter_sort_key):
