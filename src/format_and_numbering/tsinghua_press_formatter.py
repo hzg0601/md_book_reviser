@@ -42,22 +42,88 @@ def logged_sub(pattern, repl, text, flags=0, desc="替换"):
 
 
 def format_caption_references(text: str) -> str:
-    """1. 图引用格式为“如图x-x”，表引用格式为“见表x-x”"""
+    """1. 图/表/算法引用格式规范化。图: xxx如图x-x所示；表: xxx见表x-x；算法: xxx如算法x-x"""
+
+    def build_reference_sentence(
+        match, ref_prefix: str, ref_suffix: str = "", desc_cleaner=None
+    ) -> str:
+        indent = match.groupdict().get("indent", "")
+        ref_no = match.group("no")
+        desc = match.group("desc").strip()
+        if desc_cleaner:
+            desc = desc_cleaner(desc)
+        desc = re.sub(r"^[：:，,、\s]+", "", desc)
+        desc = re.sub(r"\s+", " ", desc).strip()
+        punct = (match.groupdict().get("punct") or "").strip()
+        return f"{indent}{desc}{ref_prefix}{ref_no}{ref_suffix}{punct}"
+
+    def clean_figure_desc(desc: str) -> str:
+        desc = re.sub(r"^(?:一个|一幅|一张|一组)\s*", "", desc)
+        return desc.strip()
+
     lines = []
+    in_math_block = False
     for line in text.split("\n"):
-        # 匹配标题行，比如 图1-1, 表 2-3，不去修改这些
-        if re.match(r"^(?:图|表)\s*\d+[-——\.]\d+", line.strip()) or re.match(
+        # 数学块中的内容（尤其是算法伪代码）不做图/表/算法引用重写
+        if "$$" in line:
+            lines.append(line)
+            if line.count("$$") % 2 == 1:
+                in_math_block = not in_math_block
+            continue
+
+        if in_math_block:
+            lines.append(line)
+            continue
+
+        # 匹配标题行，比如 图1-1, 表2-3, 算法3-1，不去修改这些
+        if re.match(r"^(?:图|表|算法)\s*\d+[-—\.]\d+", line.strip()) or re.match(
             r"^!\[.*\]\(.*\)", line.strip()
         ):
             lines.append(line)
             continue
 
-        # 替换正文中所有的“(?:见|如)?图\s*(\d+-[a-zA-Z0-9]+)”等
+        # 图/表/算法中的前置引用句式重排为标准格式
+        # 例如：图1-2给出了网络结构。 -> 网络结构如图1-2所示。
+        line = logged_sub(
+            r"^(?P<indent>\s*)(?:如|见)?图\s*(?P<no>\d+[-—\.]\d+)\s*(?:给出(?:了)?|展示(?:了)?|列示(?:了)?|列出(?:了)?|呈现(?:了)?|说明(?:了)?)\s*(?P<desc>.+?)\s*(?P<punct>[。；！？!?]?)\s*$",
+            lambda m: build_reference_sentence(m, "如图", "所示"),
+            line,
+            desc="图前置引用重排",
+        )
+        # 例如：如图1-2为一个网络结构的示意。 -> 网络结构如图1-2所示。
+        line = logged_sub(
+            r"^(?P<indent>\s*)(?:如|见)?图\s*(?P<no>\d+[-—\.]\d+)\s*为\s*(?P<desc>.+?)\s*的?\s*示意(?:图)?\s*(?P<punct>[。；！？!?]?)\s*$",
+            lambda m: build_reference_sentence(m, "如图", "所示", clean_figure_desc),
+            line,
+            desc="图示意句式重排",
+        )
+        # 例如：表1-2列出了参数。 -> 参数见表1-2。
+        line = logged_sub(
+            r"^(?P<indent>\s*)(?:见)?表\s*(?P<no>\d+[-—\.]\d+)\s*(?:列示(?:了)?|给出(?:了)?|展示(?:了)?|列出(?:了)?|呈现(?:了)?|说明(?:了)?)\s*(?P<desc>.+?)\s*(?P<punct>[。；！？!?]?)\s*$",
+            lambda m: build_reference_sentence(m, "见表"),
+            line,
+            desc="表前置引用重排",
+        )
+        # 例如：算法1-2给出了步骤。 -> 步骤如算法1-2。
+        line = logged_sub(
+            r"^(?P<indent>\s*)(?:如|见)?算法\s*(?P<no>\d+[-—\.]\d+)\s*(?:给出(?:了)?|展示(?:了)?|列示(?:了)?|列出(?:了)?|呈现(?:了)?|说明(?:了)?)\s*(?P<desc>.+?)\s*(?P<punct>[。；！？!?]?)\s*$",
+            lambda m: build_reference_sentence(m, "如算法"),
+            line,
+            desc="算法前置引用重排",
+        )
+
+        # 替换正文中所有的图/表/算法引用前缀
         line = logged_sub(
             r"(?:见|如)?图\s*(\d+[-—\.]\d+)", r"如图\1", line, desc="图引用替换"
         )
         line = logged_sub(
-            r"(?:见|如)?(?<!列)表\s*(\d+[-—\.]\d+)", r"见表\1", line, desc="表引用替换"
+            r"(?:见|如)?表\s*(\d+[-—\.]\d+)", r"见表\1", line, desc="表引用替换"
+        )
+        line = logged_sub(
+            r"(?:见|如)?算法\s*(\d+[-—\.]\d+)",
+            r"如算法\1",
+            line,
+            desc="算法引用替换",
         )
         lines.append(line)
 
@@ -90,10 +156,86 @@ def format_math_formulas(text: str) -> str:
     r"""7. 公式中的“*”改为“\cdot”, exp, log等函数改为\exp, \log, Softmax使用正体；"""
 
     def replace_math(match):
+        def replace_mul_stars(math_expr: str) -> str:
+            chars = []
+            n = len(math_expr)
+
+            for i, ch in enumerate(math_expr):
+                if ch != "*":
+                    chars.append(ch)
+                    continue
+
+                prev_ch = math_expr[i - 1] if i > 0 else ""
+                next_ch = math_expr[i + 1] if i + 1 < n else ""
+
+                # 跳过上下标中的 *，如 ^*、_*,{*}
+                if prev_ch in {"^", "_", "{"}:
+                    chars.append(ch)
+                    continue
+
+                # 跳过伪代码注释中的 /* 和 */
+                if prev_ch == "/" or next_ch == "/":
+                    chars.append(ch)
+                    continue
+
+                # 跳过星号环境名，如 align*、aligned*
+                window_start = max(0, i - 32)
+                window = math_expr[window_start : i + 1]
+                if re.search(r"(?:align|aligned)\*$", window):
+                    chars.append(ch)
+                    continue
+
+                # 跳过带星号的 LaTeX 命令，如 \operatorname*、\section* 等
+                cmd_window_start = max(0, i - 64)
+                cmd_window = math_expr[cmd_window_start : i + 1]
+                if re.search(r"\\[A-Za-z]+\*$", cmd_window):
+                    chars.append(ch)
+                    continue
+
+                chars.append(r" \cdot ")
+
+            return "".join(chars)
+
         math_str = match.group(0)
-        new_math_str = math_str.replace("*", r"\cdot")
+        new_math_str = replace_mul_stars(math_str)
+
+        # 仅替换裸露 argmax；在 \text{}、\operatorname{}、\operatorname*{} 中保持原样。
+        protected_token = "__ARGMAX_PROTECTED__"
+        for wrapped_cmd in ["text", "operatorname", "operatorname\\*"]:
+            pattern = rf"(\\{wrapped_cmd}\s*\{{[^{{}}]*?)\bargmax\b([^{{}}]*\}})"
+            new_math_str = re.sub(
+                pattern,
+                lambda m: f"{m.group(1)}{protected_token}{m.group(2)}",
+                new_math_str,
+            )
+
+        # 先规范已有的 \argmax，再处理未转义的 argmax。
+        new_math_str = re.sub(r"\\argmax\b", r"\\arg\\max", new_math_str)
+        new_math_str = re.sub(r"(?<!\\)\bargmax\b", r"\\arg\\max", new_math_str)
+        new_math_str = new_math_str.replace(protected_token, "argmax")
+
         new_math_str = re.sub(r"(?<!\\)\b(exp|log)\b", r"\\\1", new_math_str)
-        new_math_str = re.sub(r"\b(Softmax)\b", r"\\mathrm{\1}", new_math_str)
+        # new_math_str = re.sub(r"\b(Softmax)\b", r"\\mathrm{\1}", new_math_str)
+
+        # 算法伪代码数学块中保留 if/otherwise 原文
+        is_algorithm_pseudocode = bool(
+            re.search(
+                r"\\begin\{array\}|\\begin\{aligned\}|\\begin\{align\*?\}", new_math_str
+            )
+            and re.search(
+                r"算法流程伪代码|\\textbf\{\s*输入|\\textbf\{\s*输出|\\textbf\{\s*for\s*\}|\\textbf\{\s*if\s*\}|plan\^\*",
+                new_math_str,
+            )
+        )
+
+        if not is_algorithm_pseudocode:
+            # cases 条件语句本地化：if -> 若，otherwise -> 其他
+            new_math_str = re.sub(r"\\text\{\s*if\s*\}", r"\\text{若 }", new_math_str)
+            new_math_str = re.sub(
+                r"\\text\{\s*otherwise\s*\}", r"\\text{其他}", new_math_str
+            )
+            new_math_str = re.sub(r"\bif\b", "若", new_math_str)
+            new_math_str = re.sub(r"\botherwise\b", "其他", new_math_str)
         return new_math_str
 
     text = logged_sub(
@@ -358,6 +500,131 @@ def extract_table_units(text: str) -> str:
     return "\n".join(new_lines)
 
 
+def format_non_heading_parenthesized_items(text: str) -> str:
+    """将非标题行中形如“（1）...（2）...”的条目拆分为每条独占一行。"""
+
+    # 识别条目序号 1~30，避免把年份（如（2023））误判为编号。
+    marker_pattern = r"[（(](?:[1-9]|[12]\d|30)[）)]"
+    marker_prefix_chars = set(" \t;；。!！?？:：,，、\"'“”‘’)]）】》>")
+
+    def find_math_spans(line: str):
+        """返回行内数学公式区间，避免误识别公式中的 (1) 为条目编号。"""
+        spans = []
+        for m in re.finditer(r"(?<!\$)\$(?!\$).*?(?<!\$)\$(?!\$)", line):
+            spans.append(m.span())
+        for m in re.finditer(r"\\\(.*?\\\)", line):
+            spans.append(m.span())
+        for m in re.finditer(r"\\\[.*?\\\]", line):
+            spans.append(m.span())
+        return spans
+
+    def is_in_spans(pos: int, spans):
+        for start, end in spans:
+            if start <= pos < end:
+                return True
+        return False
+
+    def find_list_markers_outside_math(line: str):
+        spans = find_math_spans(line)
+        valid_markers = []
+        for m in re.finditer(marker_pattern, line):
+            if is_in_spans(m.start(), spans):
+                continue
+
+            # 仅把“行首或标点后”的（n）视为条目编号，避免误拆“步骤（8）”等正文引用。
+            start = m.start()
+            if start == 0 or line[start - 1] in marker_prefix_chars:
+                valid_markers.append(m)
+        return valid_markers
+
+    def split_items_segment(segment: str):
+        markers = find_list_markers_outside_math(segment)
+        if not markers:
+            return [segment]
+
+        chunks = []
+        for i, marker in enumerate(markers):
+            start = marker.start()
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(segment)
+            chunk = segment[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+        return chunks if chunks else [segment]
+
+    lines = text.split("\n")
+    new_lines = []
+    in_fenced_code = False
+    in_math_block = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if "$$" in line:
+            new_lines.append(line)
+            if line.count("$$") % 2 == 1:
+                in_math_block = not in_math_block
+            continue
+
+        if in_math_block:
+            new_lines.append(line)
+            continue
+
+        if re.match(r"^\s*```", line):
+            in_fenced_code = not in_fenced_code
+            new_lines.append(line)
+            continue
+
+        if in_fenced_code:
+            new_lines.append(line)
+            continue
+
+        # 跳过 Markdown 标题和表格行
+        if re.match(r"^\s*#{1,6}\s+", line) or stripped.startswith("|"):
+            new_lines.append(line)
+            continue
+
+        has_full_width = "（" in line and "）" in line
+        has_half_width = "(" in line and ")" in line
+        if not (has_full_width or has_half_width):
+            new_lines.append(line)
+            continue
+
+        markers = find_list_markers_outside_math(line)
+        if not markers:
+            new_lines.append(line)
+            continue
+
+        marker_match = markers[0]
+
+        prefix = line[: marker_match.start()].rstrip()
+        item_segment = line[marker_match.start() :]
+        item_lines = split_items_segment(item_segment)
+
+        if len(item_lines) <= 1 and not prefix:
+
+            new_lines.append(line)
+            continue
+
+        if prefix:
+            new_lines.append(prefix)
+
+        changed = False
+        for item in item_lines:
+            cleaned_item = item.strip()
+            if cleaned_item != item:
+                changed = True
+            # Markdown 中行尾两个空格表示硬换行，确保每个编号条目独占一行。
+            new_lines.append(f"\n{cleaned_item}")
+
+        if prefix or len(item_lines) > 1:
+            changed = True
+
+        if changed:
+            logger.info(f"[（1）条目独占行] '{line}' -> '{' | '.join(item_lines)}'")
+
+    return "\n".join(new_lines)
+
+
 def format_tsinghua_press(chapter_path: str) -> str:
     """清华大学出版社格式要求的总入口函数"""
     md_path = get_md_path(chapter_path)
@@ -365,13 +632,14 @@ def format_tsinghua_press(chapter_path: str) -> str:
     if not text:
         logger.error(f"章节内容为空: {md_path}")
         return
-    # text = format_caption_references(text)
+    text = format_caption_references(text)
+    text = format_non_heading_parenthesized_items(text)
     # text = format_number_ranges(text)
-    # # text = format_math_formulas(text)
+    text = format_math_formulas(text)
     # text = format_llm_abbreviations(text)
     # text = format_bold_headings(text)
     # text = format_heading_levels(text)
-    text = extract_table_units(text)
+    # text = extract_table_units(text)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("".join(text))
 
@@ -473,4 +741,4 @@ if __name__ == "__main__":
 
             logger.info(f"Processing chapter: {chapter_dir}")
             format_tsinghua_press(chapter_path)
-    remove_duplicated_abbreviations()
+    # remove_duplicated_abbreviations()
