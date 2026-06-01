@@ -11,6 +11,7 @@ from src.md2docx.build_book_docx import (
     ImageSizingOptions,
     TableSizingOptions,
     apply_code_listing_paragraph_style,
+    collect_markdown_files,
     get_math_text,
     is_caption,
     is_algorithm_math_paragraph,
@@ -36,6 +37,37 @@ $$
         processed = preprocess_markdown_for_docx(source)
 
         self.assertEqual(processed, source)
+
+    def test_preprocess_numeric_range_tilde_is_escaped(self) -> None:
+        source = "Flash Attention可实现2~4倍加速，激活8~12个专家。"
+
+        processed = preprocess_markdown_for_docx(source)
+
+        self.assertEqual(
+            processed, "Flash Attention可实现2\\~4倍加速，激活8\\~12个专家。"
+        )
+
+    def test_collect_markdown_files_skips_ignored_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            chapter_dir = root / "第1章"
+            chapter_dir.mkdir(parents=True)
+            normal_md = chapter_dir / "001.md"
+            normal_md.write_text("# 正文", encoding="utf-8")
+
+            hidden_dir = root / ".venv"
+            hidden_dir.mkdir(parents=True)
+            hidden_md = hidden_dir / "LICENSE.md"
+            hidden_md.write_text("BSD 3-Clause License", encoding="utf-8")
+
+            venv_dir = root / "venv"
+            venv_dir.mkdir(parents=True)
+            venv_md = venv_dir / "debug.md"
+            venv_md.write_text("## Debugging", encoding="utf-8")
+
+            files = collect_markdown_files(root)
+
+            self.assertEqual(files, [normal_md])
 
     def test_inline_algorithm_reference_is_not_caption(self) -> None:
         document = Document()
@@ -78,8 +110,8 @@ $$
         paragraph._element.append(
             parse_xml(
                 '<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
-                '<m:oMath><m:r><m:t>算法2-1 Flash Attention 流程</m:t></m:r></m:oMath>'
-                '</m:oMathPara>'
+                "<m:oMath><m:r><m:t>算法2-1 Flash Attention 流程</m:t></m:r></m:oMath>"
+                "</m:oMathPara>"
             )
         )
 
@@ -92,8 +124,8 @@ $$
         paragraph._element.append(
             parse_xml(
                 '<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
-                '<m:oMath><m:r><m:t>普通公式</m:t></m:r></m:oMath>'
-                '</m:oMathPara>'
+                "<m:oMath><m:r><m:t>普通公式</m:t></m:r></m:oMath>"
+                "</m:oMathPara>"
             )
         )
 
@@ -109,8 +141,8 @@ $$
             paragraph._element.append(
                 parse_xml(
                     '<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
-                    '<m:oMath><m:r><m:t>算法2-1 Flash Attention 流程</m:t></m:r></m:oMath>'
-                    '</m:oMathPara>'
+                    "<m:oMath><m:r><m:t>算法2-1 Flash Attention 流程</m:t></m:r></m:oMath>"
+                    "</m:oMathPara>"
                 )
             )
             document.save(docx_path)
@@ -139,7 +171,10 @@ $$
                 "代码清单",
             )
             self.assertEqual(
-                output_document.tables[0].cell(0, 0).paragraphs[0].paragraph_format.line_spacing_rule,
+                output_document.tables[0]
+                .cell(0, 0)
+                .paragraphs[0]
+                .paragraph_format.line_spacing_rule,
                 WD_LINE_SPACING.SINGLE,
             )
 

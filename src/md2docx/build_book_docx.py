@@ -61,6 +61,21 @@ AUTHOR_BIO_DIR_NAME = "作者简介"
 AUTHOR_BIO_MD_NAME = "作者简介.md"
 COVER_IMAGE_NAME = "封面.png"
 NUMBERED_FRONT_MATTER_TITLES = {"前言", "自序", TOC_TITLE}
+IGNORED_MARKDOWN_DIR_NAMES = {
+    ".git",
+    ".idea",
+    ".vscode",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    "logs",
+    "log",
+    "tmp",
+    "temp",
+    "site-packages",
+}
 
 CHAPTER_TITLE_PATTERN = re.compile(
     r"^(前言|自序|目录|第\s*[0-9一二三四五六七八九十]+\s*章)"
@@ -71,6 +86,7 @@ CAPTION_PREFIX_PATTERN = re.compile(
 )
 EQUATION_TAG_PATTERN = re.compile(r"\\tag\*?\{([^{}]+)\}")
 EQUATION_NUMBER_PATTERN = re.compile(r"^\([^)]+\)$")
+NUMERIC_RANGE_TILDE_PATTERN = re.compile(r"(?<=\d)\s*~\s*(?=\d)")
 CAPTION_REFERENCE_BODY_PATTERN = re.compile(
     r"^(中|内|给出(?:了)?|展示(?:了)?|示出(?:了)?|显示(?:了)?|描述(?:了)?|列出(?:了)?|为|是|所示|相比(?:于)?|与|对比|表示|说明(?:了)?|采用(?:了)?|使用(?:了)?|包含|对应)"
 )
@@ -287,7 +303,10 @@ def rewrite_equation_tags_for_docx(content: str) -> str:
 
 
 def preprocess_markdown_for_docx(content: str) -> str:
-    return rewrite_equation_tags_for_docx(content)
+    content = rewrite_equation_tags_for_docx(content)
+    # Keep numeric ranges like 2~4 as literal text in Pandoc output.
+    # Otherwise, paired tildes in a paragraph can be parsed as subscript spans.
+    return NUMERIC_RANGE_TILDE_PATTERN.sub(r"\\~", content)
 
 
 def create_pandoc_input(markdown_path: Path) -> Path:
@@ -2307,14 +2326,34 @@ def postprocess_docx(
 
 
 def collect_markdown_files(input_root: Path) -> list[Path]:
-    chapter_dirs = [path for path in input_root.iterdir() if path.is_dir()]
+    chapter_dirs = [
+        path
+        for path in input_root.iterdir()
+        if path.is_dir()
+        and not path.name.startswith(".")
+        and path.name.lower() not in IGNORED_MARKDOWN_DIR_NAMES
+    ]
     ordered_dirs = sorted(chapter_dirs, key=chapter_sort_key)
 
     markdown_files: list[Path] = []
     for chapter_dir in ordered_dirs:
+        chapter_markdowns: list[Path] = []
+        for root, dirnames, filenames in os.walk(chapter_dir):
+            dirnames[:] = [
+                dirname
+                for dirname in dirnames
+                if not dirname.startswith(".")
+                and dirname.lower() not in IGNORED_MARKDOWN_DIR_NAMES
+            ]
+            root_path = Path(root)
+            for filename in filenames:
+                if not filename.lower().endswith(".md"):
+                    continue
+                chapter_markdowns.append(root_path / filename)
+
         markdown_files.extend(
             sorted(
-                chapter_dir.rglob("*.md"),
+                chapter_markdowns,
                 key=lambda path: (
                     natural_sort_key(str(path.relative_to(chapter_dir))),
                     path.name.lower(),
