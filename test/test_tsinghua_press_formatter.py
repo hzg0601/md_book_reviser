@@ -4,6 +4,7 @@ from src.format_and_numbering.tsinghua_press_formatter import (
     format_caption_references,
     format_math_formulas,
     format_non_heading_parenthesized_items,
+    format_year_suffix,
 )
 
 
@@ -110,6 +111,26 @@ class TsinghuaPressFormatterTests(unittest.TestCase):
         result = format_math_formulas(content)
         self.assertIn(r"\operatorname*{argmax}", result)
         self.assertNotIn(r"\operatorname \cdot", result)
+
+    def test_year_suffix_skips_2048_in_parentheses(self) -> None:
+        content = "这个数字（2048）可能不是年份，但（2024）是年份。"
+        expected = "这个数字（2048）可能不是年份，但（2024年）是年份。"
+        self.assertEqual(format_year_suffix(content), expected)
+
+    def test_year_suffix_skips_2048_in_table_cell(self) -> None:
+        content = "| 年份 | 数值 |\n| 2048 | 10 |\n| 2023 | 8 |"
+        expected = "| 年份 | 数值 |\n| 2048 | 10 |\n| 2023年 | 8 |"
+        self.assertEqual(format_year_suffix(content), expected)
+
+    def test_year_suffix_adds_suffix_for_slashed_years(self) -> None:
+        content = "该系列覆盖2000/2002两个年份阶段。"
+        expected = "该系列覆盖2000/2002年两个年份阶段。"
+        self.assertEqual(format_year_suffix(content), expected)
+
+    def test_year_suffix_skips_2048_in_slashed_years(self) -> None:
+        content = "该系列覆盖2000/2048两个编号或年份候选。"
+        expected = "该系列覆盖2000/2048两个编号或年份候选。"
+        self.assertEqual(format_year_suffix(content), expected)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ REALESRGAN_PATH = _cfg["REALESRGAN_PATH"]
 
 BOOK_NAME = _cfg_root.get("book_name", "")
 AUTHOR = _cfg_root.get("author", "")
-ACKNOWLEDGEMENT = _cfg_root.get("ackonwledgement", "")
+ACKNOWLEDGEMENT = _cfg_root.get("acknowledgement", "")
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 

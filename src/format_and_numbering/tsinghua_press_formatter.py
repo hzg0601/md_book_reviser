@@ -24,6 +24,14 @@ if PROJECT_ROOT not in sys.path:
 
 from src.utils import chat_vlm, get_md_path, chapter_reader, logger, MD_BOOK_PATH
 
+YEAR_MANUAL_CONFIRMATION = "2048"
+
+
+def log_manual_year_confirmation(context: str, matched_text: str) -> None:
+    logger.warning(
+        f"[YEAR-CHECK][MANUAL-CONFIRM] 检测到疑似年份但已跳过自动补年: context={context}, value='{matched_text}'"
+    )
+
 
 def logged_sub(pattern, repl, text, flags=0, desc="替换"):
     """执行正则替换，并记录匹配到的替换项日志。"""
@@ -625,6 +633,63 @@ def format_non_heading_parenthesized_items(text: str) -> str:
     return "\n".join(new_lines)
 
 
+def format_year_suffix(text: str) -> str:
+    """为正文和表格中表示年份的数字添加"年"字。
+    匹配规则：
+    1. 括号中的年份：（2023）-> （2023年），(2008) -> (2008年)
+    2. 表格单元格中的孤立年份：| 2006 | -> | 2006年 |
+    3. 斜杠连接的双年份：2000/2002 -> 2000/2002年
+    """
+
+    def replace_slashed_year(match):
+        first_year = match.group(1)
+        second_year = match.group(2)
+        if YEAR_MANUAL_CONFIRMATION in {first_year, second_year}:
+            log_manual_year_confirmation("slash-years", match.group(0))
+            return match.group(0)
+        return f"{first_year}/{second_year}年"
+
+    def replace_parenthesized_year(match):
+        year = match.group(2)
+        if year == YEAR_MANUAL_CONFIRMATION:
+            log_manual_year_confirmation("parenthesized", match.group(0))
+            return match.group(0)
+        return f"{match.group(1)}{year}年{match.group(3)}"
+
+    def replace_table_year(match):
+        year = match.group(2)
+        if year == YEAR_MANUAL_CONFIRMATION:
+            log_manual_year_confirmation("table-cell", match.group(0))
+            return match.group(0)
+        return f"{match.group(1)}{year}年{match.group(3)}"
+
+    # 1. 斜杠连接的双年份，避免已带"年"的情况
+    text = logged_sub(
+        r"(?<!\d)(19\d{2}|20\d{2})\s*/\s*(19\d{2}|20\d{2})(?!\d|年)",
+        replace_slashed_year,
+        text,
+        desc="斜杠年份补年",
+    )
+
+    # 2. 括号中的年份（全角/半角），避免已带"年"的
+    text = logged_sub(
+        r"([（(])(19\d{2}|20\d{2})([）)])",
+        replace_parenthesized_year,
+        text,
+        desc="括号内年份补年",
+    )
+
+    # 3. 表格单元格中的孤立年份：两侧被 | 包围的纯四位数字
+    text = logged_sub(
+        r"(\|\s*)(19\d{2}|20\d{2})(\s*\|)",
+        replace_table_year,
+        text,
+        desc="表格年份补年",
+    )
+
+    return text
+
+
 def format_tsinghua_press(chapter_path: str) -> str:
     """清华大学出版社格式要求的总入口函数"""
     md_path = get_md_path(chapter_path)
@@ -632,10 +697,11 @@ def format_tsinghua_press(chapter_path: str) -> str:
     if not text:
         logger.error(f"章节内容为空: {md_path}")
         return
-    text = format_caption_references(text)
-    text = format_non_heading_parenthesized_items(text)
+    # text = format_caption_references(text)
+    # text = format_non_heading_parenthesized_items(text)
     # text = format_number_ranges(text)
-    text = format_math_formulas(text)
+    # text = format_math_formulas(text)
+    text = format_year_suffix(text)
     # text = format_llm_abbreviations(text)
     # text = format_bold_headings(text)
     # text = format_heading_levels(text)
