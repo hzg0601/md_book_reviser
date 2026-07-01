@@ -237,13 +237,26 @@ def format_math_formulas(text: str) -> str:
         )
 
         if not is_algorithm_pseudocode:
-            # cases 条件语句本地化：if -> 若，otherwise -> 其他
+            # cases 条件语句本地化：if -> 若 -> 当...时，otherwise -> 其他
             new_math_str = re.sub(r"\\text\{\s*if\s*\}", r"\\text{若 }", new_math_str)
             new_math_str = re.sub(
                 r"\\text\{\s*otherwise\s*\}", r"\\text{其他}", new_math_str
             )
             new_math_str = re.sub(r"\bif\b", "若", new_math_str)
             new_math_str = re.sub(r"\botherwise\b", "其他", new_math_str)
+
+            new_math_str = re.sub(
+                r"\\text\{若\s*\}\s*(.+?)(?=(?:\\\\|\\cr\b|\\text\{其他\}|\\end\{cases\}|$))",
+                lambda m: rf"\text{{当 }}{m.group(1).strip()}\text{{ 时；}}",
+                new_math_str,
+                flags=re.DOTALL,
+            )
+            new_math_str = re.sub(
+                r"(?<![\\\w])若\s*(.+?)(?=(?:\\\\|\\cr\b|\\text\{其他\}|\\end\{cases\}|$))",
+                lambda m: f"当 {m.group(1).strip()} 时；",
+                new_math_str,
+                flags=re.DOTALL,
+            )
         return new_math_str
 
     text = logged_sub(
@@ -700,8 +713,8 @@ def format_tsinghua_press(chapter_path: str) -> str:
     # text = format_caption_references(text)
     # text = format_non_heading_parenthesized_items(text)
     # text = format_number_ranges(text)
-    # text = format_math_formulas(text)
-    text = format_year_suffix(text)
+    text = format_math_formulas(text)
+    # text = format_year_suffix(text)
     # text = format_llm_abbreviations(text)
     # text = format_bold_headings(text)
     # text = format_heading_levels(text)

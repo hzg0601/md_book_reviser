@@ -112,6 +112,21 @@ class TsinghuaPressFormatterTests(unittest.TestCase):
         self.assertIn(r"\operatorname*{argmax}", result)
         self.assertNotIn(r"\operatorname \cdot", result)
 
+    def test_non_pseudocode_if_clause_is_localized_to_dang_shi(self) -> None:
+        content = "$$\\begin{cases}x, if y>0 \\\\ 0, otherwise\\end{cases}$$"
+        expected = "$$\\begin{cases}x, 当 y>0 时 \\\\ 0, 其他\\end{cases}$$"
+        self.assertEqual(format_math_formulas(content), expected)
+
+    def test_text_if_clause_uses_single_backslash_text_command(self) -> None:
+        content = (
+            "$$\\begin{cases}x, \\text{if} y>0 \\\\ 0, \\text{otherwise}\\end{cases}$$"
+        )
+        expected = (
+            "$$\\begin{cases}x, \\text{当 }y>0\\text{ 时} \\\\ "
+            "0, \\text{其他}\\end{cases}$$"
+        )
+        self.assertEqual(format_math_formulas(content), expected)
+
     def test_year_suffix_skips_2048_in_parentheses(self) -> None:
         content = "这个数字（2048）可能不是年份，但（2024）是年份。"
         expected = "这个数字（2048）可能不是年份，但（2024年）是年份。"
