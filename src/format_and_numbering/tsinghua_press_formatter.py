@@ -26,6 +26,82 @@ from src.utils import chat_vlm, get_md_path, chapter_reader, logger, MD_BOOK_PAT
 
 YEAR_MANUAL_CONFIRMATION = "2048"
 
+ZH_NUMERAL_MAP = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+MATH_TEXT_PROTECTED_PATTERNS = [
+    r"\\text\s*\{[^{}]*\}",
+    r"\\operatorname\*?\s*\{[^{}]*\}",
+    r"\\mathrm\s*\{[^{}]*\}",
+    r"\\mathbf\s*\{[^{}]*\}",
+    r"\\mathit\s*\{[^{}]*\}",
+    r"\\mathsf\s*\{[^{}]*\}",
+    r"\\mathtt\s*\{[^{}]*\}",
+    r"\\tag\s*\{[^{}]*\}",
+    r"\\label\s*\{[^{}]*\}",
+    r"\\ref\s*\{[^{}]*\}",
+    r"\\eqref\s*\{[^{}]*\}",
+    r"\\begin\s*\{[^{}]*\}",
+    r"\\end\s*\{[^{}]*\}",
+]
+
+
+def zh_numeral_to_int(value: str) -> int | None:
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    if value in ZH_NUMERAL_MAP:
+        return ZH_NUMERAL_MAP[value]
+    if value == "十":
+        return 10
+    if value.startswith("十"):
+        return 10 + ZH_NUMERAL_MAP.get(value[1:], 0)
+    if value.endswith("十"):
+        return ZH_NUMERAL_MAP.get(value[0], 0) * 10
+    if len(value) == 3 and value[1] == "十":
+        return ZH_NUMERAL_MAP.get(value[0], 0) * 10 + ZH_NUMERAL_MAP.get(value[2], 0)
+    return None
+
+
+def get_chapter_number_from_path(chapter_path: str) -> int | None:
+    match = re.search(r"第([一二三四五六七八九十\d]+)章", chapter_path)
+    if not match:
+        return None
+    return zh_numeral_to_int(match.group(1))
+
+
+def protect_math_text_segments(math_text: str) -> tuple[str, dict[str, str]]:
+    replacements = {}
+    protected_text = math_text
+
+    def repl(match):
+        key = f"__MATH_PROTECTED_{len(replacements)}__"
+        replacements[key] = match.group(0)
+        return key
+
+    for pattern in MATH_TEXT_PROTECTED_PATTERNS:
+        protected_text = re.sub(pattern, repl, protected_text)
+
+    return protected_text, replacements
+
+
+def restore_math_text_segments(math_text: str, replacements: dict[str, str]) -> str:
+    restored = math_text
+    for key, value in replacements.items():
+        restored = restored.replace(key, value)
+    return restored
+
 
 def log_manual_year_confirmation(context: str, matched_text: str) -> None:
     logger.warning(
@@ -83,10 +159,10 @@ def format_caption_references(text: str) -> str:
             lines.append(line)
             continue
 
-        # 匹配标题行，比如 图1-1, 表2-3, 算法3-1，不去修改这些
-        if re.match(r"^(?:图|表|算法)\s*\d+[-—\.]\d+", line.strip()) or re.match(
-            r"^!\[.*\]\(.*\)", line.strip()
-        ):
+        # 仅跳过真正的图/表/算法标题行；不要把“图1-2给出了...”这类正文句子误判为标题。
+        if re.match(
+            r"^(?:图|表|算法)\s*\d+[-—\.]\d+(?:\s+.*)?$", line.strip()
+        ) or re.match(r"^!\[.*\]\(.*\)", line.strip()):
             lines.append(line)
             continue
 
@@ -236,7 +312,14 @@ def format_math_formulas(text: str) -> str:
             )
         )
 
-        if not is_algorithm_pseudocode:
+        has_otherwise_clause = bool(
+            re.search(
+                r"\\text\{\s*(?:otherwise|其他)\s*\}|\botherwise\b|其他",
+                new_math_str,
+            )
+        )
+
+        if not is_algorithm_pseudocode and has_otherwise_clause:
             # cases 条件语句本地化：if -> 若 -> 当...时，otherwise -> 其他
             new_math_str = re.sub(r"\\text\{\s*if\s*\}", r"\\text{若 }", new_math_str)
             new_math_str = re.sub(
@@ -247,16 +330,29 @@ def format_math_formulas(text: str) -> str:
 
             new_math_str = re.sub(
                 r"\\text\{若\s*\}\s*(.+?)(?=(?:\\\\|\\cr\b|\\text\{其他\}|\\end\{cases\}|$))",
-                lambda m: rf"\text{{当 }}{m.group(1).strip()}\text{{ 时；}}",
+                lambda m: rf"\text{{当 }}{m.group(1).strip()}\text{{ 时}} ",
                 new_math_str,
                 flags=re.DOTALL,
             )
             new_math_str = re.sub(
                 r"(?<![\\\w])若\s*(.+?)(?=(?:\\\\|\\cr\b|\\text\{其他\}|\\end\{cases\}|$))",
-                lambda m: f"当 {m.group(1).strip()} 时；",
+                lambda m: f"当 {m.group(1).strip()} 时 ",
                 new_math_str,
                 flags=re.DOTALL,
             )
+
+        protected_math_str, replacements = protect_math_text_segments(new_math_str)
+        protected_math_str = re.sub(
+            r"(?<![\\A-Za-z0-9\p{Han}])([\p{Han}]{1,30})(?![A-Za-z0-9\p{Han}])",
+            lambda m: rf"\text{{{m.group(1)}}}",
+            protected_math_str,
+        )
+        protected_math_str = re.sub(
+            r"(?<![\\\w])([A-Za-z][A-Za-z0-9-]{1,})(?=\s*\()",
+            lambda m: rf"\text{{{m.group(1)}}}",
+            protected_math_str,
+        )
+        new_math_str = restore_math_text_segments(protected_math_str, replacements)
         return new_math_str
 
     text = logged_sub(
@@ -270,6 +366,87 @@ def format_math_formulas(text: str) -> str:
         desc="行内公式替换",
     )
     return text
+
+
+def format_section_references(text: str, chapter_path: str | None = None) -> str:
+    """将“本章第一小节/第二小节”等表述替换为当前章内的具体小节编号。"""
+    chapter_number = get_chapter_number_from_path(chapter_path or "")
+    if chapter_number is None:
+        return text
+
+    def repl(match):
+        section_number = zh_numeral_to_int(match.group("section"))
+        if section_number is None:
+            return match.group(0)
+        return f"{chapter_number}.{section_number}小节"
+
+    return logged_sub(
+        r"(?:本章)?第(?P<section>[一二三四五六七八九十\d]+)小节",
+        repl,
+        text,
+        desc="小节编号显式化",
+    )
+
+
+def format_bilingual_term_order(text: str) -> str:
+    """将“English(中文术语)”统一为“中文术语（English）”。"""
+
+    explanatory_prefixes = (
+        "如",
+        "见",
+        "参见",
+        "详见",
+        "例如",
+        "即",
+        "也称",
+        "以下简称",
+        "下文",
+        "后文",
+        "本章",
+        "用于",
+        "表示",
+        "指",
+        "包括",
+        "其中",
+        "通过",
+        "在",
+        "由",
+    )
+
+    def replace_term(match):
+        chinese_term = match.group("zh").strip()
+        if chinese_term.startswith(explanatory_prefixes):
+            return match.group(0)
+        return f"{chinese_term}（{match.group('en').strip()}）"
+
+    return logged_sub(
+        r"(?<![A-Za-z])(?P<en>[A-Za-z][A-Za-z0-9_+\-/]*(?:\s+[A-Za-z][A-Za-z0-9_+\-/]*)*)\s*[（(]\s*(?P<zh>[\p{Han}]+)\s*[）)]",
+        replace_term,
+        text,
+        desc="中英文术语顺序调整",
+    )
+
+
+def format_reference_sentence_punctuation(text: str) -> str:
+    """将“如图/表/公式/算法x-x所示：”统一为句号结尾。"""
+
+    return logged_sub(
+        r"((?:如)(?:图|表|公式|算法)\s*\d+(?:[-—\.．]\d+)+所示)\s*[：:]",
+        r"\1。",
+        text,
+        desc="引用句末冒号改句号",
+    )
+
+
+def format_english_paper_title_quotes(text: str) -> str:
+    """正文中英文论文题名使用双引号，而不是《》。"""
+
+    return logged_sub(
+        r"《(?=[^》]*[A-Za-z])(?P<title>[^》\n]*[A-Za-z][^》\n]*)》",
+        lambda m: f'“{m.group("title")}”',
+        text,
+        desc="英文论文名改双引号",
+    )
 
 
 def format_llm_abbreviations(text: str) -> str:
@@ -635,7 +812,7 @@ def format_non_heading_parenthesized_items(text: str) -> str:
             if cleaned_item != item:
                 changed = True
             # Markdown 中行尾两个空格表示硬换行，确保每个编号条目独占一行。
-            new_lines.append(f"\n{cleaned_item}")
+            new_lines.append(f"{cleaned_item}  ")
 
         if prefix or len(item_lines) > 1:
             changed = True
@@ -713,7 +890,11 @@ def format_tsinghua_press(chapter_path: str) -> str:
     # text = format_caption_references(text)
     # text = format_non_heading_parenthesized_items(text)
     # text = format_number_ranges(text)
-    text = format_math_formulas(text)
+    # text = format_math_formulas(text) # 待改进
+    text = format_section_references(text, chapter_path)
+    # text = format_bilingual_term_order(text) #待改进
+    text = format_reference_sentence_punctuation(text)
+    text = format_english_paper_title_quotes(text)
     # text = format_year_suffix(text)
     # text = format_llm_abbreviations(text)
     # text = format_bold_headings(text)

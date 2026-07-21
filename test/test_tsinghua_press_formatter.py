@@ -1,9 +1,13 @@
 ﻿import unittest
 
 from src.format_and_numbering.tsinghua_press_formatter import (
+    format_bilingual_term_order,
     format_caption_references,
+    format_english_paper_title_quotes,
     format_math_formulas,
     format_non_heading_parenthesized_items,
+    format_reference_sentence_punctuation,
+    format_section_references,
     format_year_suffix,
 )
 
@@ -114,7 +118,10 @@ class TsinghuaPressFormatterTests(unittest.TestCase):
 
     def test_non_pseudocode_if_clause_is_localized_to_dang_shi(self) -> None:
         content = "$$\\begin{cases}x, if y>0 \\\\ 0, otherwise\\end{cases}$$"
-        expected = "$$\\begin{cases}x, 当 y>0 时 \\\\ 0, 其他\\end{cases}$$"
+        expected = (
+            "$$\\begin{cases}x, \\text{当} y>0 \\text{时} \\\\ "
+            "0, \\text{其他}\\end{cases}$$"
+        )
         self.assertEqual(format_math_formulas(content), expected)
 
     def test_text_if_clause_uses_single_backslash_text_command(self) -> None:
@@ -126,6 +133,51 @@ class TsinghuaPressFormatterTests(unittest.TestCase):
             "0, \\text{其他}\\end{cases}$$"
         )
         self.assertEqual(format_math_formulas(content), expected)
+
+    def test_single_branch_ruo_clause_is_not_converted_to_dang_shi(self) -> None:
+        content = (
+            "$$\n"
+            r"O_t = \text{NewtonSchulz}(B_t) \approx UV^\top\quad\text{若 } "
+            r"B_t = USV^\top \, (\text{SVD}) \tag{1-45}\n"
+            "$$"
+        )
+        self.assertEqual(format_math_formulas(content), content)
+
+    def test_math_formula_wraps_non_variable_text(self) -> None:
+        content = (
+            "$$s(t)=\\begin{cases}1, & 其他\\\\0, & Attention(Q,K,V)\\end{cases}$$"
+        )
+        expected = "$$s(t)=\\begin{cases}1, & \\text{其他}\\\\0, & \\text{Attention}(Q,K,V)\\end{cases}$$"
+        self.assertEqual(format_math_formulas(content), expected)
+
+    def test_math_formula_does_not_wrap_subscripted_variable_as_text(self) -> None:
+        content = "$$P_M(y_t) = Attention(Q,K,V)$$"
+        expected = "$$P_M(y_t) = \\text{Attention}(Q,K,V)$$"
+        self.assertEqual(format_math_formulas(content), expected)
+
+    def test_section_reference_is_expanded_with_chapter_number(self) -> None:
+        content = "本章第一小节介绍背景，第二小节介绍方法。"
+        expected = "3.1小节介绍背景，3.2小节介绍方法。"
+        self.assertEqual(format_section_references(content, "第3章 深度学习"), expected)
+
+    def test_bilingual_term_order_is_normalized(self) -> None:
+        content = "采用Tilling(分块)策略，并结合Window Partition（窗口划分）。"
+        expected = "采用分块（Tilling）策略，并结合窗口划分（Window Partition）。"
+        self.assertEqual(format_bilingual_term_order(content), expected)
+
+    def test_bilingual_explanatory_parenthetical_is_not_reordered(self) -> None:
+        content = "采用Tilling（详见第3章）策略。"
+        self.assertEqual(format_bilingual_term_order(content), content)
+
+    def test_reference_sentence_colon_becomes_period(self) -> None:
+        content = "如图2-24所示：系统进入稳态；如公式3-1所示:结果成立。"
+        expected = "如图2-24所示。系统进入稳态；如公式3-1所示。结果成立。"
+        self.assertEqual(format_reference_sentence_punctuation(content), expected)
+
+    def test_english_paper_title_uses_double_quotes(self) -> None:
+        content = "论文《Attention Is All You Need》提出了Transformer。"
+        expected = "论文“Attention Is All You Need”提出了Transformer。"
+        self.assertEqual(format_english_paper_title_quotes(content), expected)
 
     def test_year_suffix_skips_2048_in_parentheses(self) -> None:
         content = "这个数字（2048）可能不是年份，但（2024）是年份。"
