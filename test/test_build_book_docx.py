@@ -4,7 +4,7 @@ import tempfile
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.text import WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import parse_xml
 
 from src.md2docx.build_book_docx import (
@@ -181,6 +181,34 @@ $$
                 .paragraphs[0]
                 .paragraph_format.line_spacing_rule,
                 WD_LINE_SPACING.SINGLE,
+            )
+
+    def test_body_paragraph_is_justified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            docx_path = Path(tmpdir) / "body.docx"
+            document = Document()
+            document.add_paragraph("这是一个正文段落。")
+            document.save(docx_path)
+
+            postprocess_docx(
+                docx_path,
+                ImageSizingOptions(
+                    max_width_ratio=0.75,
+                    max_height_ratio=0.75,
+                    small_image_mode="keep",
+                ),
+                TableSizingOptions(
+                    width_ratio=0.95,
+                    overflow_threshold=1.12,
+                    overflow_strategy="shrink-font",
+                    min_font_size=9.0,
+                ),
+            )
+
+            output_document = Document(docx_path)
+            self.assertEqual(
+                output_document.paragraphs[0].alignment,
+                WD_ALIGN_PARAGRAPH.JUSTIFY,
             )
 
 

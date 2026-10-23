@@ -2212,6 +2212,12 @@ def postprocess_docx(
             strip_leading_whitespace_runs(paragraph)
             continue
 
+        if (
+            get_paragraph_style_name(paragraph) in {"Normal", "Body Text"}
+            and not has_numbering(paragraph)
+        ):
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
     for index, paragraph in enumerate(all_paragraphs):
         if paragraph._element in body_paragraph_elements:
             continue
