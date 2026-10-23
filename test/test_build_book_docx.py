@@ -166,6 +166,11 @@ $$
             self.assertEqual(len(output_document.paragraphs), 0)
             self.assertEqual(len(output_document.tables), 1)
             self.assertTrue(is_algorithm_listing_table(output_document.tables[0]))
+            self.assertFalse(
+                output_document.tables[0]
+                .cell(0, 0)
+                ._tc.xpath("./w:tcPr/w:shd")
+            )
             self.assertEqual(
                 output_document.tables[0].cell(0, 0).paragraphs[0].style.name,
                 "代码清单",

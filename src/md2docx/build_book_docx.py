@@ -731,17 +731,6 @@ def is_algorithm_listing_table(table) -> bool:
     )
 
 
-def set_cell_shading(cell, fill: str = "F2F2F2") -> None:
-    cell_properties = cell._tc.get_or_add_tcPr()
-    shading = cell_properties.find(qn("w:shd"))
-    if shading is None:
-        shading = OxmlElement("w:shd")
-        cell_properties.append(shading)
-    shading.set(qn("w:val"), "clear")
-    shading.set(qn("w:color"), "auto")
-    shading.set(qn("w:fill"), fill)
-
-
 def set_cell_margins(cell, *, top: str, left: str, bottom: str, right: str) -> None:
     cell_properties = cell._tc.get_or_add_tcPr()
     margins = cell_properties.find(qn("w:tcMar"))
@@ -841,7 +830,6 @@ def wrap_algorithm_math_paragraphs_in_listing_tables(
         cell = listing_table.cell(0, 0)
         cell.width = Emu(available_width)
         listing_table.columns[0].width = Emu(available_width)
-        set_cell_shading(cell)
         set_cell_margins(cell, top="90", left="120", bottom="90", right="120")
         cell._tc.clear_content()
         cell._tc.append(wrapped_paragraph)
@@ -2295,7 +2283,6 @@ def postprocess_docx(
             table.columns[0].width = Emu(available_width)
             cell = table.cell(0, 0)
             cell.width = Emu(available_width)
-            set_cell_shading(cell)
             set_cell_margins(cell, top="90", left="120", bottom="90", right="120")
             for paragraph in cell.paragraphs:
                 apply_algorithm_math_listing_paragraph_format(document, paragraph)
