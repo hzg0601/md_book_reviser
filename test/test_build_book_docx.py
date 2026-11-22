@@ -3,13 +3,14 @@ import re
 import unittest
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 import fitz
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import parse_xml
-from docx.oxml.ns import qn
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt
 
 from src.md2docx.build_book_docx import (
@@ -19,6 +20,7 @@ from src.md2docx.build_book_docx import (
     apply_code_listing_paragraph_style,
     apply_pdf_quality,
     collect_markdown_files,
+    export_pdf_with_office,
     get_math_text,
     is_caption,
     is_algorithm_math_paragraph,
@@ -26,6 +28,7 @@ from src.md2docx.build_book_docx import (
     looks_like_caption_text,
     postprocess_docx,
     preprocess_markdown_for_docx,
+    promote_brace_limits_to_group_chars,
     resolve_pdf_quality,
 )
 
@@ -362,6 +365,91 @@ $$
                 heading_style.element.get_or_add_rPr().rFonts.get(qn("w:eastAsia")),
                 "黑体",
             )
+
+    def test_promote_underbrace_limit_to_group_char(self) -> None:
+        document = Document()
+        document.element.body.append(
+            parse_xml(
+                f"""
+                <w:p {nsdecls("w", "m")}>
+                  <m:oMath>
+                    <m:limLow>
+                      <m:e>
+                        <m:limLow>
+                          <m:e><m:r><m:t>0,1,2</m:t></m:r></m:e>
+                          <m:lim><m:r><m:t>⏟</m:t></m:r></m:lim>
+                        </m:limLow>
+                      </m:e>
+                      <m:lim><m:r><m:t>chunk 0</m:t></m:r></m:lim>
+                    </m:limLow>
+                  </m:oMath>
+                </w:p>
+                """
+            )
+        )
+
+        promote_brace_limits_to_group_chars(document)
+
+        body = document.element.body
+        group_char = body.find(f".//{qn('m:groupChr')}")
+        self.assertIsNotNone(group_char)
+        properties = group_char.find(qn("m:groupChrPr"))
+        self.assertEqual(properties.find(qn("m:chr")).get(qn("m:val")), "⏟")
+        self.assertEqual(properties.find(qn("m:pos")).get(qn("m:val")), "bot")
+        self.assertEqual(properties.find(qn("m:vertJc")).get(qn("m:val")), "top")
+        self.assertEqual(
+            "".join(t.text or "" for t in group_char.iter(qn("m:t"))), "0,1,2"
+        )
+        label_limit = body.find(f".//{qn('m:limLow')}/{qn('m:lim')}")
+        self.assertEqual(
+            "".join(t.text or "" for t in label_limit.iter(qn("m:t"))), "chunk 0"
+        )
+
+    def test_promote_overbrace_limit_to_group_char(self) -> None:
+        document = Document()
+        document.element.body.append(
+            parse_xml(
+                f"""
+                <w:p {nsdecls("w", "m")}>
+                  <m:oMath>
+                    <m:limUpp>
+                      <m:e><m:r><m:t>x+y</m:t></m:r></m:e>
+                      <m:lim><m:r><m:t>⏞</m:t></m:r></m:lim>
+                    </m:limUpp>
+                  </m:oMath>
+                </w:p>
+                """
+            )
+        )
+
+        promote_brace_limits_to_group_chars(document)
+
+        group_char = document.element.body.find(f".//{qn('m:groupChr')}")
+        self.assertIsNotNone(group_char)
+        properties = group_char.find(qn("m:groupChrPr"))
+        self.assertEqual(properties.find(qn("m:chr")).get(qn("m:val")), "⏞")
+        self.assertEqual(properties.find(qn("m:pos")).get(qn("m:val")), "top")
+        self.assertEqual(properties.find(qn("m:vertJc")).get(qn("m:val")), "bot")
+        self.assertIsNone(document.element.body.find(f".//{qn('m:limUpp')}"))
+
+    def test_export_pdf_requests_heading_bookmarks(self) -> None:
+        captured_kwargs = {}
+
+        class FakeDocument:
+            def ExportAsFixedFormat(self, **kwargs) -> None:
+                captured_kwargs.update(kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            docx_path = Path(tmpdir) / "book.docx"
+            pdf_path = Path(tmpdir) / "book.pdf"
+            with patch(
+                "src.md2docx.build_book_docx.run_office_document_action",
+                lambda _path, action: action(FakeDocument()),
+            ):
+                export_pdf_with_office(docx_path, pdf_path)
+
+        self.assertEqual(captured_kwargs["ExportFormat"], 17)
+        self.assertEqual(captured_kwargs["CreateBookmarks"], 1)
 
     def test_resolve_pdf_quality_presets(self) -> None:
         self.assertEqual(resolve_pdf_quality("low"), (130, 96, 60))

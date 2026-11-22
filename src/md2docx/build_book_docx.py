@@ -73,6 +73,7 @@ PDF_QUALITY_PRESETS = {
 }
 WD_EXPORT_FORMAT_PDF = 17
 WD_EXPORT_OPTIMIZE_FOR_PRINT = 0
+WD_EXPORT_CREATE_HEADING_BOOKMARKS = 1
 IGNORED_MARKDOWN_DIR_NAMES = {
     ".git",
     ".idea",
@@ -800,6 +801,36 @@ def set_cell_margins(cell, *, top: str, left: str, bottom: str, right: str) -> N
             margins.append(side)
         side.set(qn("w:w"), value)
         side.set(qn("w:type"), "dxa")
+
+
+BRACE_TO_GROUP_CHR = {"⏟": ("bot", "top"), "⏞": ("top", "bot")}
+
+
+def promote_brace_limits_to_group_chars(document: Document) -> None:
+    body = document.element.body
+    for limit_tag in ("m:limLow", "m:limUpp"):
+        for limit in list(body.iter(qn(limit_tag))):
+            lim = limit.find(qn("m:lim"))
+            if lim is None:
+                continue
+            brace = "".join(t.text or "" for t in lim.iter(qn("m:t"))).strip()
+            if brace not in BRACE_TO_GROUP_CHR:
+                continue
+
+            position, vertical_justification = BRACE_TO_GROUP_CHR[brace]
+            group_char = OxmlElement("m:groupChr")
+            group_char_properties = OxmlElement("m:groupChrPr")
+            for tag, value in (
+                ("m:chr", brace),
+                ("m:pos", position),
+                ("m:vertJc", vertical_justification),
+            ):
+                element = OxmlElement(tag)
+                element.set(qn("m:val"), value)
+                group_char_properties.append(element)
+            group_char.append(group_char_properties)
+            group_char.append(limit.find(qn("m:e")))
+            limit.getparent().replace(limit, group_char)
 
 
 def set_math_paragraph_left_aligned(paragraph_element) -> None:
@@ -2102,6 +2133,7 @@ def export_pdf_with_office(docx_path: Path, pdf_path: Path) -> None:
             ExportFormat=WD_EXPORT_FORMAT_PDF,
             OpenAfterExport=False,
             OptimizeFor=WD_EXPORT_OPTIMIZE_FOR_PRINT,
+            CreateBookmarks=WD_EXPORT_CREATE_HEADING_BOOKMARKS,
         )
 
     run_office_document_action(docx_path, action)
@@ -2340,6 +2372,7 @@ def postprocess_docx(
 ) -> None:
     document = Document(docx_path)
 
+    promote_brace_limits_to_group_chars(document)
     configure_document_layout(document)
     configure_right_aligned_style(document)
     configure_fifth_level_heading_style(document)
