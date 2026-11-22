@@ -6,3 +6,4 @@ pyyaml
 python-docx
 docxcompose
 pywin32
+PyMuPDF

@@ -47,7 +47,7 @@ from src.utils import MD_BOOK_PATH, REALESRGAN_PATH, chat_vlm, logger
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
-MIN_IMAGE_WIDTH = 2480
+MIN_IMAGE_WIDTH = 1024
 CAPTION_SUFFIX = "notes-translation"
 INDEX_REMOVE_SUFFIX = "index-remove"
 UPSCALE_SUFFIX_PREFIX = "super-resolution"  # 设置为"",直接替换原图

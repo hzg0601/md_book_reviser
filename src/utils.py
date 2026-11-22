@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,6 +46,25 @@ REALESRGAN_PATH = _cfg["REALESRGAN_PATH"]
 BOOK_NAME = _cfg_root.get("book_name", "")
 AUTHOR = _cfg_root.get("author", "")
 ACKNOWLEDGEMENT = _cfg_root.get("acknowledgement", "")
+
+DEFAULT_ALLOWED_MD_FILES = [
+    "作者简介",
+    "前言",
+    "自序",
+    r"\d{1,2}_content",
+    "参考文献",
+    "附录",
+]
+ALLOWED_MD_FILES = _cfg_root.get("allowed_md_files") or DEFAULT_ALLOWED_MD_FILES
+if isinstance(ALLOWED_MD_FILES, str):
+    ALLOWED_MD_FILES = [ALLOWED_MD_FILES]
+
+PDF_QUALITY = str(_cfg_root.get("pdf_quality") or "medium").strip().lower()
+
+
+def is_allowed_md_file(md_file_name: str) -> bool:
+    """按 allowed_md_files 中的正则表达式筛选 md 文件名（不含扩展名）。"""
+    return any(re.search(pattern, md_file_name) for pattern in ALLOWED_MD_FILES)
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 

@@ -61,6 +61,18 @@ AUTHOR_BIO_DIR_NAME = "作者简介"
 AUTHOR_BIO_MD_NAME = "作者简介.md"
 COVER_IMAGE_NAME = "封面.png"
 NUMBERED_FRONT_MATTER_TITLES = {"前言", "自序", TOC_TITLE}
+DEFAULT_ALLOWED_MD_FILES = ("作者简介", "前言", "自序", r"\d{1,2}_content", "参考文献", "附录")
+RIGHT_ALIGNED_STYLE_NAME = "Right Aligned"
+DEFAULT_PDF_QUALITY = "medium"
+# quality -> (dpi_threshold, dpi_target, jpeg_quality); None keeps images untouched
+# Word already compresses exported images to roughly 220 ppi, so thresholds sit below it.
+PDF_QUALITY_PRESETS = {
+    "low": (130, 96, 60),
+    "medium": (180, 150, 75),
+    "high": None,
+}
+WD_EXPORT_FORMAT_PDF = 17
+WD_EXPORT_OPTIMIZE_FOR_PRINT = 0
 IGNORED_MARKDOWN_DIR_NAMES = {
     ".git",
     ".idea",
@@ -92,6 +104,16 @@ CAPTION_REFERENCE_BODY_PATTERN = re.compile(
 )
 CODE_LISTING_STYLE_NAME = "代码清单"
 SOURCE_CODE_STYLE_NAME = "Source Code"
+RIGHT_ALIGNED_DIV_PATTERN = re.compile(
+    r'<div\s+align\s*=\s*["\']?right["\']?\s*>(.*?)</div\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+SUPERSCRIPT_TAG_PATTERN = re.compile(
+    r"<sup\b[^>]*>(.*?)</sup\s*>", re.IGNORECASE | re.DOTALL
+)
+SUPERSCRIPT_ESCAPE_PATTERN = re.compile(r"([\\`*_\[\]{}#$~^<>&|@])")
+WHITESPACE_PATTERN = re.compile(r"\s+")
 
 CHINESE_DIGITS = {
     "零": 0,
@@ -302,7 +324,35 @@ def rewrite_equation_tags_for_docx(content: str) -> str:
     return EQUATION_TAG_PATTERN.sub(replace_tag, content)
 
 
+def rewrite_right_aligned_divs_for_docx(content: str) -> str:
+    def replace_div(match: re.Match[str]) -> str:
+        inner = HTML_BREAK_PATTERN.sub("\n", match.group(1))
+        lines = [line.strip() for line in inner.splitlines() if line.strip()]
+        # Pandoc only emits a DOCX line break for the two-space hard break.
+        body = "  \n".join(lines)
+        return f'::: {{custom-style="{RIGHT_ALIGNED_STYLE_NAME}"}}\n{body}\n:::'
+
+    return RIGHT_ALIGNED_DIV_PATTERN.sub(replace_div, content)
+
+
+def rewrite_superscript_tags_for_docx(content: str) -> str:
+    """Rewrite <sup>…</sup> to Pandoc superscript so DOCX keeps the superscript."""
+
+    def replace_sup(match: re.Match[str]) -> str:
+        inner = WHITESPACE_PATTERN.sub(" ", match.group(1)).strip()
+        if not inner:
+            return ""
+        escaped = SUPERSCRIPT_ESCAPE_PATTERN.sub(r"\\\1", inner)
+        # Pandoc needs every space inside a superscript span escaped.
+        escaped = escaped.replace(" ", r"\ ")
+        return f"^{escaped}^"
+
+    return SUPERSCRIPT_TAG_PATTERN.sub(replace_sup, content)
+
+
 def preprocess_markdown_for_docx(content: str) -> str:
+    content = rewrite_superscript_tags_for_docx(content)
+    content = rewrite_right_aligned_divs_for_docx(content)
     content = rewrite_equation_tags_for_docx(content)
     # Keep numeric ranges like 2~4 as literal text in Pandoc output.
     # Otherwise, paired tildes in a paragraph can be parsed as subscript spans.
@@ -1046,6 +1096,42 @@ def apply_body_paragraph_format(paragraph) -> None:
     paragraph_format.space_before = Pt(0)
     paragraph_format.space_after = Pt(0)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+
+def apply_right_aligned_paragraph_format(paragraph) -> None:
+    paragraph_format = paragraph.paragraph_format
+    paragraph_format.first_line_indent = Pt(0)
+    paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    paragraph_format.line_spacing = BODY_LINE_SPACING
+    paragraph_format.space_before = Pt(0)
+    paragraph_format.space_after = Pt(0)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    for run in paragraph.runs:
+        set_run_fonts(run)
+
+
+def configure_right_aligned_style(document: Document) -> None:
+    style = resolve_paragraph_style(document, RIGHT_ALIGNED_STYLE_NAME)
+    body_style = resolve_paragraph_style(document, "Normal")
+    if style is None or body_style is None:
+        return
+
+    # Pandoc bases the div style on a "Body Text" style that the reference
+    # document does not define, so Word falls back to the docDefaults size
+    # (三号). Inheriting from Normal keeps it at the body text size.
+    style.base_style = body_style
+    style.font.size = body_style.font.size
+
+
+def configure_fifth_level_heading_style(document: Document) -> None:
+    style = resolve_paragraph_style(document, "Heading 5")
+    if style is None:
+        return
+
+    # The style only sets the East Asian font, so Latin letters and digits in a
+    # level-5 heading fall back to the body font. Use 黑体 for all of them.
+    style.font.name = "SimHei"
+    style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "黑体")
 
 
 def apply_reference_entry_paragraph_format(paragraph) -> None:
@@ -1997,6 +2083,109 @@ def run_office_document_action(
         raise last_error
 
 
+def resolve_pdf_quality(quality: str | None) -> tuple[int, int, int] | None:
+    normalized = (quality or "").strip().lower()
+    if normalized not in PDF_QUALITY_PRESETS:
+        if normalized:
+            print(
+                f"[warn] Unknown pdf_quality '{quality}', "
+                f"using {DEFAULT_PDF_QUALITY}."
+            )
+        normalized = DEFAULT_PDF_QUALITY
+    return PDF_QUALITY_PRESETS[normalized]
+
+
+def export_pdf_with_office(docx_path: Path, pdf_path: Path) -> None:
+    def action(document) -> None:
+        document.ExportAsFixedFormat(
+            OutputFileName=str(pdf_path.resolve()),
+            ExportFormat=WD_EXPORT_FORMAT_PDF,
+            OpenAfterExport=False,
+            OptimizeFor=WD_EXPORT_OPTIMIZE_FOR_PRINT,
+        )
+
+    run_office_document_action(docx_path, action)
+
+
+def downsample_pdf_images(
+    document, dpi_threshold: int, dpi_target: int, jpeg_quality: int
+) -> None:
+    import fitz
+
+    seen_xrefs: set[int] = set()
+    for page in document:
+        for image in page.get_images(full=True):
+            xref = image[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+            if image[1]:
+                # Leave soft-mask images alone to keep their transparency.
+                continue
+
+            rects = page.get_image_rects(xref)
+            if not rects:
+                continue
+            display_width_pt = max(rect.width for rect in rects)
+            if display_width_pt <= 0:
+                continue
+
+            pixmap = fitz.Pixmap(document, xref)
+            if pixmap is None:
+                continue
+            effective_dpi = pixmap.width / (display_width_pt / 72)
+            if not pixmap.width or effective_dpi <= dpi_threshold:
+                continue
+
+            target_width = int(round(display_width_pt / 72 * dpi_target))
+            if target_width < 1 or target_width >= pixmap.width:
+                continue
+            target_height = max(
+                int(round(pixmap.height * target_width / pixmap.width)), 1
+            )
+            scaled = fitz.Pixmap(pixmap, target_width, target_height)
+            if scaled.alpha:
+                stream = scaled.tobytes("png")
+            else:
+                stream = scaled.tobytes("jpeg", jpg_quality=jpeg_quality)
+            page.replace_image(xref, stream=stream)
+
+
+def apply_pdf_quality(pdf_path: Path, quality: str | None) -> None:
+    preset = resolve_pdf_quality(quality)
+    if preset is None:
+        return
+
+    import fitz
+
+    dpi_threshold, dpi_target, image_quality = preset
+    temp_path = pdf_path.with_name(f"{pdf_path.stem}.__quality__{pdf_path.suffix}")
+    document = fitz.open(pdf_path)
+    try:
+        downsample_pdf_images(document, dpi_threshold, dpi_target, image_quality)
+        document.save(
+            str(temp_path), garbage=4, clean=True, deflate=True, deflate_fonts=True
+        )
+    finally:
+        document.close()
+
+    # Never let quality post-processing enlarge the PDF.
+    if temp_path.stat().st_size < pdf_path.stat().st_size:
+        replace_file_with_retry(temp_path, pdf_path)
+    else:
+        temp_path.unlink(missing_ok=True)
+
+
+def convert_docx_to_pdf(docx_path: Path, pdf_path: Path, quality: str | None) -> None:
+    print(
+        f"[pdf] converting {docx_path.name} -> {pdf_path.name} "
+        f"(quality: {quality or DEFAULT_PDF_QUALITY})",
+        flush=True,
+    )
+    export_pdf_with_office(docx_path, pdf_path)
+    apply_pdf_quality(pdf_path, quality)
+
+
 def find_first_main_chapter_office_paragraph(document):
     for paragraph in document.Paragraphs:
         text = normalize_office_paragraph_text(paragraph.Range.Text)
@@ -2152,6 +2341,8 @@ def postprocess_docx(
     document = Document(docx_path)
 
     configure_document_layout(document)
+    configure_right_aligned_style(document)
+    configure_fifth_level_heading_style(document)
     normalize_reference_section_lists(document)
     remove_extra_front_matter_section_breaks(document)
     scale_inline_shapes(document, image_options)
@@ -2172,6 +2363,10 @@ def postprocess_docx(
             continue
 
         if not paragraph.text.strip() and not contains_drawing(paragraph):
+            continue
+
+        if get_paragraph_style_name(paragraph) == RIGHT_ALIGNED_STYLE_NAME:
+            apply_right_aligned_paragraph_format(paragraph)
             continue
 
         if is_reference_section_heading(paragraph):
@@ -2318,7 +2513,34 @@ def postprocess_docx(
     save_document_with_retry(document, docx_path)
 
 
-def collect_markdown_files(input_root: Path) -> list[Path]:
+def load_utils_setting(name: str, default):
+    """读取 src/utils.py 中由 config.yaml 提供的配置项。"""
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from src import utils as utils_module
+
+        return getattr(utils_module, name, default)
+    except Exception as exc:
+        print(f"[warn] Failed to load {name} from src/utils.py, using default: {exc}")
+        return default
+
+
+def load_allowed_md_file_patterns() -> tuple[re.Pattern[str], ...]:
+    configured = load_utils_setting("ALLOWED_MD_FILES", DEFAULT_ALLOWED_MD_FILES)
+    patterns = tuple(configured) if configured else DEFAULT_ALLOWED_MD_FILES
+    return tuple(re.compile(pattern) for pattern in patterns)
+
+
+def collect_markdown_files(
+    input_root: Path,
+    allowed_md_patterns: tuple[re.Pattern[str], ...] | None = None,
+) -> list[Path]:
+    if allowed_md_patterns is None:
+        allowed_md_patterns = load_allowed_md_file_patterns()
+
     chapter_dirs = [
         path
         for path in input_root.iterdir()
@@ -2341,6 +2563,11 @@ def collect_markdown_files(input_root: Path) -> list[Path]:
             root_path = Path(root)
             for filename in filenames:
                 if not filename.lower().endswith(".md"):
+                    continue
+                if not any(
+                    pattern.search(Path(filename).stem)
+                    for pattern in allowed_md_patterns
+                ):
                     continue
                 chapter_markdowns.append(root_path / filename)
 
@@ -2529,6 +2756,11 @@ def main() -> int:
         cover_image_path=cover_image_path,
     )
     print(f"[merged] {merged_output}")
+
+    pdf_output = merged_output.with_suffix(".pdf")
+    pdf_quality = load_utils_setting("PDF_QUALITY", DEFAULT_PDF_QUALITY)
+    convert_docx_to_pdf(merged_output, pdf_output, pdf_quality)
+    print(f"[pdf] {pdf_output}")
 
     if not args.keep_intermediate:
         for _, docx_file in generated_docx_files:

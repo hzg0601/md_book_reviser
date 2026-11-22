@@ -3,20 +3,28 @@
   VLM_MODEL_NAME: "Qwen3-VL-32B-Instruct-AWQ"
   VLM_API_KEY: "EMPTY"
   BOCHA_API_KEY: "sk-"
-  MD_BOOK_PATH: "C:\\Users\\Lenovo\\OneDrive\\notion\\Training and Inferrence_Algorithm Stack of LLM"
+  MD_BOOK_PATH: "D:\\codes\\full-stack-of-LLM-algorithms"
   MAX_CHARS_PER_CHUNK: 28000
-  REALESRGAN_PATH: "D:\\codes\\realesrgan"
+  REALESRGAN_PATH: "D:\\codes\\realesrgan\\realesrgan-ncnn-vulkan.exe"
 
 remote:
   VLM_ENDPOINT: "https://integrate.api.nvidia.com"
   VLM_MODEL_NAME: "qwen/qwen3.5-122b-a10b"
   VLM_API_KEY: "nvapi-"
   BOCHA_API_KEY: "sk-"
-  MD_BOOK_PATH: "C:\\Users\\hzg06\\OneDrive\\notion\\Training and Inferrence_Algorithm Stack of LLM"
+  MD_BOOK_PATH: "D:\\codes\\full-stack-of-LLM-algorithms"
   MAX_CHARS_PER_CHUNK: 28000
-  REALESRGAN_PATH: "D:\\codes\\realesrgan"
+  REALESRGAN_PATH: "D:\\codes\\realesrgan\\realesrgan-ncnn-vulkan.exe"
 mode: "local"
 
 book_name: "大模型算法技术栈：训练与推理"
 author: "黄志国 著"
 acknowledgement: "谨以此书致敬所有知识的创造者与布道者。"
+allowed_md_files:
+  - "作者简介"
+  - "前言"
+  - "自序"
+  - "\\d{1,2}_content"
+  - "参考文献"
+  - "附录"
+pdf_quality: "high"
