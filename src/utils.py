@@ -59,12 +59,29 @@ ALLOWED_MD_FILES = _cfg_root.get("allowed_md_files") or DEFAULT_ALLOWED_MD_FILES
 if isinstance(ALLOWED_MD_FILES, str):
     ALLOWED_MD_FILES = [ALLOWED_MD_FILES]
 
+DEFAULT_ALLOWED_FOLDERS = [
+    "作者简介",
+    "前言",
+    "自序",
+    r"第[0-9一二三四五六七八九十]+章",
+    "参考文献",
+    "附录",
+]
+ALLOWED_FOLDERS = _cfg_root.get("allowed_folders") or DEFAULT_ALLOWED_FOLDERS
+if isinstance(ALLOWED_FOLDERS, str):
+    ALLOWED_FOLDERS = [ALLOWED_FOLDERS]
+
 PDF_QUALITY = str(_cfg_root.get("pdf_quality") or "medium").strip().lower()
 
 
 def is_allowed_md_file(md_file_name: str) -> bool:
     """按 allowed_md_files 中的正则表达式筛选 md 文件名（不含扩展名）。"""
     return any(re.search(pattern, md_file_name) for pattern in ALLOWED_MD_FILES)
+
+
+def is_allowed_folder(folder_name: str) -> bool:
+    """按 allowed_folders 中的正则表达式筛选一级文件夹名称。"""
+    return any(re.search(pattern, folder_name) for pattern in ALLOWED_FOLDERS)
 
 BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 

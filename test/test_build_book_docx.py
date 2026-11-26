@@ -14,6 +14,7 @@ from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt
 
 from src.md2docx.build_book_docx import (
+    DEFAULT_ALLOWED_FOLDERS,
     DEFAULT_ALLOWED_MD_FILES,
     ImageSizingOptions,
     TableSizingOptions,
@@ -112,6 +113,9 @@ $$
 
     def test_collect_markdown_files_skips_ignored_dirs(self) -> None:
         allowed_patterns = tuple(re.compile(p) for p in DEFAULT_ALLOWED_MD_FILES)
+        allowed_folder_patterns = tuple(
+            re.compile(p) for p in DEFAULT_ALLOWED_FOLDERS
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             chapter_dir = root / "第1章"
@@ -129,12 +133,19 @@ $$
             venv_md = venv_dir / "debug.md"
             venv_md.write_text("## Debugging", encoding="utf-8")
 
-            files = collect_markdown_files(root, allowed_md_patterns=allowed_patterns)
+            files = collect_markdown_files(
+                root,
+                allowed_md_patterns=allowed_patterns,
+                allowed_folder_patterns=allowed_folder_patterns,
+            )
 
             self.assertEqual(files, [normal_md])
 
     def test_collect_markdown_files_filters_by_allowed_md_files(self) -> None:
         allowed_patterns = tuple(re.compile(p) for p in DEFAULT_ALLOWED_MD_FILES)
+        allowed_folder_patterns = tuple(
+            re.compile(p) for p in DEFAULT_ALLOWED_FOLDERS
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
 
@@ -152,9 +163,39 @@ $$
             notes_md = chapter_dir / "notes.md"
             notes_md.write_text("# 笔记", encoding="utf-8")
 
-            files = collect_markdown_files(root, allowed_md_patterns=allowed_patterns)
+            files = collect_markdown_files(
+                root,
+                allowed_md_patterns=allowed_patterns,
+                allowed_folder_patterns=allowed_folder_patterns,
+            )
 
             self.assertEqual(sorted(files), sorted([reference_md, chapter_md]))
+
+    def test_collect_markdown_files_filters_by_allowed_folders(self) -> None:
+        allowed_patterns = tuple(re.compile(p) for p in DEFAULT_ALLOWED_MD_FILES)
+        allowed_folder_patterns = tuple(
+            re.compile(p) for p in DEFAULT_ALLOWED_FOLDERS
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            review_dir = root / "审阅"
+            review_dir.mkdir(parents=True)
+            review_md = review_dir / "1_content.md"
+            review_md.write_text("# 审阅记录", encoding="utf-8")
+
+            chapter_dir = root / "第一章 预备知识"
+            chapter_dir.mkdir(parents=True)
+            chapter_md = chapter_dir / "1_content.md"
+            chapter_md.write_text("# 正文", encoding="utf-8")
+
+            files = collect_markdown_files(
+                root,
+                allowed_md_patterns=allowed_patterns,
+                allowed_folder_patterns=allowed_folder_patterns,
+            )
+
+            self.assertEqual(files, [chapter_md])
 
     def test_inline_algorithm_reference_is_not_caption(self) -> None:
         document = Document()

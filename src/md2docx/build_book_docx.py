@@ -62,6 +62,14 @@ AUTHOR_BIO_MD_NAME = "作者简介.md"
 COVER_IMAGE_NAME = "封面.png"
 NUMBERED_FRONT_MATTER_TITLES = {"前言", "自序", TOC_TITLE}
 DEFAULT_ALLOWED_MD_FILES = ("作者简介", "前言", "自序", r"\d{1,2}_content", "参考文献", "附录")
+DEFAULT_ALLOWED_FOLDERS = (
+    "作者简介",
+    "前言",
+    "自序",
+    r"第[0-9一二三四五六七八九十]+章",
+    "参考文献",
+    "附录",
+)
 RIGHT_ALIGNED_STYLE_NAME = "Right Aligned"
 DEFAULT_PDF_QUALITY = "medium"
 # quality -> (dpi_threshold, dpi_target, jpeg_quality); None keeps images untouched
@@ -2567,12 +2575,21 @@ def load_allowed_md_file_patterns() -> tuple[re.Pattern[str], ...]:
     return tuple(re.compile(pattern) for pattern in patterns)
 
 
+def load_allowed_folder_patterns() -> tuple[re.Pattern[str], ...]:
+    configured = load_utils_setting("ALLOWED_FOLDERS", DEFAULT_ALLOWED_FOLDERS)
+    patterns = tuple(configured) if configured else DEFAULT_ALLOWED_FOLDERS
+    return tuple(re.compile(pattern) for pattern in patterns)
+
+
 def collect_markdown_files(
     input_root: Path,
     allowed_md_patterns: tuple[re.Pattern[str], ...] | None = None,
+    allowed_folder_patterns: tuple[re.Pattern[str], ...] | None = None,
 ) -> list[Path]:
     if allowed_md_patterns is None:
         allowed_md_patterns = load_allowed_md_file_patterns()
+    if allowed_folder_patterns is None:
+        allowed_folder_patterns = load_allowed_folder_patterns()
 
     chapter_dirs = [
         path
@@ -2580,6 +2597,9 @@ def collect_markdown_files(
         if path.is_dir()
         and not path.name.startswith(".")
         and path.name.lower() not in IGNORED_MARKDOWN_DIR_NAMES
+        and any(
+            pattern.search(path.name) for pattern in allowed_folder_patterns
+        )
     ]
     ordered_dirs = sorted(chapter_dirs, key=chapter_sort_key)
 

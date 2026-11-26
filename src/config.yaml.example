@@ -28,3 +28,10 @@ allowed_md_files:
   - "参考文献"
   - "附录"
 pdf_quality: "high"
+allowed_folders:
+  - "作者简介"
+  - "前言"
+  - "自序"
+  - "第[0-9一二三四五六七八九十]+章"
+  - "参考文献"
+  - "附录"

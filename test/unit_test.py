@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.format_and_numbering.structure_unifier import img_unifier
 from src.format_and_numbering.formatter import remove_blank_in_equation, black2normal
-from src.utils import logger, MD_BOOK_PATH, is_allowed_md_file
+from src.utils import logger, MD_BOOK_PATH, is_allowed_md_file, is_allowed_folder
 from src.format_and_numbering.name_normalizer import img_name_normalizer, table_name_normalizer
 from src.bibliography_manage.bibliography_search_api import bibliography_search_pipeline
 from src.format_and_numbering.numbering import number_ite
@@ -39,6 +39,11 @@ def batch_chapter_process(md_book_path):
     for item in os.listdir(md_book_path):
         chapter_path = os.path.join(md_book_path, item)
         if os.path.isdir(chapter_path) and ".git" !=item:
+            if not is_allowed_folder(item):
+                logger.info(
+                    f"跳过文件夹 {chapter_path}：文件夹名不匹配 allowed_folders"
+                )
+                continue
             if not chapter_has_allowed_md(chapter_path):
                 logger.info(
                     f"跳过文件夹 {chapter_path}：没有匹配 allowed_md_files 的 md 文件"
